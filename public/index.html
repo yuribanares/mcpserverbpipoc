@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BPI × MCP — Proof of Concept</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand"><span class="crown">♛</span><span class="bpi">BPI</span> <span class="x">×</span> <span class="mcp">MCP</span> <span class="subtitle">Open Banking · Fund Top-Up Proof of Concept</span></div>
+    <div class="status-cluster">
+      <span id="llm-badge" class="badge">LLM: …</span>
+      <span id="conn-badge" class="badge badge-dot">connecting…</span>
+      <button id="reset-btn" title="Start a new conversation">⟲ New chat</button>
+    </div>
+  </header>
+
+  <main id="ui">
+    <!-- ░░ A.I Chat Center ░░ -->
+    <section class="panel chat-panel">
+      <div class="panel-head"><span class="dot dot-chat"></span> A.I Chat Center</div>
+      <div id="chat" class="chat-scroll"></div>
+      <div id="status-line" class="status-line"></div>
+      <form id="chat-form" class="chat-input">
+        <input id="chat-text" type="text" placeholder="Chat here…  e.g. Load ₱500 to my wallet from my BPI account" autocomplete="off" />
+        <button id="send-btn" type="submit">Send</button>
+      </form>
+    </section>
+
+    <!-- ░░ Right column: three CLI terminals ░░ -->
+    <section class="terminals">
+      <div class="panel term-panel">
+        <div class="panel-head"><span class="dot dot-client"></span> MCP Client Terminal <span class="head-note">partner app ⇄ MCP server (JSON-RPC / stdio)</span></div>
+        <div class="term" id="term-mcp-client"></div>
+      </div>
+      <div class="panel term-panel">
+        <div class="panel-head"><span class="dot dot-server"></span> BPI MCP Server Terminal <span class="head-note">tools ⇄ BPI Open Banking API</span></div>
+        <div class="term" id="term-mcp-server"></div>
+      </div>
+      <div class="panel term-panel">
+        <div class="panel-head"><span class="dot dot-api"></span> BPI Open Banking API Server Terminal <span class="head-note">HTTP request / response</span></div>
+        <div class="term" id="term-bpi-api"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
