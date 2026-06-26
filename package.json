@@ -1,0 +1,21 @@
+{
+  "name": "mcpserverbpipoc",
+  "version": "1.0.0",
+  "description": "Proof of concept UI showing interactions between an LLM, an MCP Client, the BPI MCP Server, and the BPI Open Banking API (Fund Top-Up journey).",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server/orchestrator.js",
+    "dev": "node --watch server/orchestrator.js"
+  },
+  "dependencies": {
+    "@google/genai": "^0.3.1",
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
