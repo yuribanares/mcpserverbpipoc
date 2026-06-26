@@ -35,9 +35,12 @@ const PARTNER = process.env.PARTNER_NAME || 'DRAGONPAY CORP';
 // ── LLM selection ──────────────────────────────────────────────────────────
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+// The offline scripted planner is always available as a fallback so a quota or
+// network problem with Gemini never dead-ends a live demo.
+const mockLlm = createMockLLM();
 const llm = GEMINI_KEY
   ? createGeminiLLM({ apiKey: GEMINI_KEY, model: GEMINI_MODEL, tools: TOOL_DECLARATIONS, system: SYSTEM_PROMPT })
-  : createMockLLM();
+  : mockLlm;
 
 // ── MCP client (talks to the BPI MCP Server child process) ──────────────────
 let mcp; // MCP SDK Client
@@ -70,8 +73,15 @@ async function startMcpClient() {
   log(CHANNELS.MCP_CLIENT, { level: 'info', dir: '->', text: 'tools/list', data: tools.map((t) => t.name) });
 }
 
+// Demo pacing: a short beat so each MCP → server → API hop visibly cascades
+// across the terminals instead of firing all at once. Set PACE_MS=0 to disable.
+const PACE_MS = Number(process.env.PACE_MS ?? 350);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const pace = () => (PACE_MS > 0 ? sleep(PACE_MS) : Promise.resolve());
+
 // One MCP tool call, with both sides narrated on the MCP Client terminal.
 async function mcpCall(name, args) {
+  await pace();
   log(CHANNELS.MCP_CLIENT, { level: 'req', dir: '->', text: `tools/call ${name}`, data: redactArgs(args) });
   const res = await mcp.callTool({ name, arguments: args });
   const payload = JSON.parse(res.content?.[0]?.text || '{}');
@@ -105,6 +115,7 @@ wss.on('connection', (ws) => {
   // Per-connection conversation + BPI flow state.
   ws.state = freshState();
   ws.pending = new Map(); // promptId -> resolve fn for human-in-the-loop screens
+  ws.fellBack = false; // switched from Gemini to the offline planner this session?
   send(ws, { type: 'hello', partner: PARTNER, llm: llm.name, usingGemini: !!GEMINI_KEY });
 
   ws.on('message', (raw) => {
@@ -135,6 +146,7 @@ async function handleClientMessage(ws, msg) {
     }
     case 'reset':
       ws.state = freshState();
+      ws.fellBack = false; // give Gemini another try on a fresh conversation
       send(ws, { type: 'reset-ok' });
       break;
   }
@@ -160,7 +172,25 @@ async function onUserChat(ws, text) {
   try {
     for (let step = 0; step < 10; step++) {
       send(ws, { type: 'status', text: `${shortLlm()} is thinking…` });
-      const { text: reply, calls } = await llm.next(ws.state.contents);
+
+      const engine = ws.fellBack ? mockLlm : llm;
+      let reply, calls;
+      try {
+        ({ text: reply, calls } = await engine.next(ws.state.contents));
+      } catch (err) {
+        log(CHANNELS.CHAT, { level: 'err', text: `LLM error: ${err.message}` });
+        // If the real model failed and a fallback exists, switch to the offline
+        // scripted planner and keep going so the demo still completes.
+        if (GEMINI_KEY && !ws.fellBack) {
+          ws.fellBack = true;
+          send(ws, { type: 'chat', role: 'system', text: llmErrorHint(err) });
+          send(ws, { type: 'chat', role: 'system', text: '↪︎ Continuing with the offline scripted planner so the demo can proceed. Fix the key/model/quota and start a new chat to use Gemini again.' });
+          log(CHANNELS.SYSTEM, { level: 'info', text: 'Gemini unavailable — falling back to offline scripted planner for this conversation.' });
+          continue; // retry this step with the fallback engine
+        }
+        send(ws, { type: 'chat', role: 'system', text: llmErrorHint(err) });
+        break;
+      }
 
       if (!calls || calls.length === 0) {
         if (reply) {
@@ -294,6 +324,19 @@ async function bpiFront(method, pathName, body) {
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
+// Turn a raw Gemini/SDK error into an actionable hint shown in the chat.
+function llmErrorHint(err) {
+  const m = String(err?.message || err);
+  if (/API key|API_KEY_INVALID|401|invalid.*key|PERMISSION_DENIED/i.test(m))
+    return `⚠️ Gemini rejected the request — check GEMINI_API_KEY in your .env. (${m})`;
+  if (/404|not found|NOT_FOUND|is not found|unsupported/i.test(m))
+    return `⚠️ Model "${GEMINI_MODEL}" was not found for your key. Try GEMINI_MODEL=gemini-2.0-flash (or gemini-1.5-flash) in .env. (${m})`;
+  if (/429|quota|RESOURCE_EXHAUSTED|rate/i.test(m))
+    return `⚠️ Gemini quota/rate limit hit. Wait a moment or check your plan. (${m})`;
+  if (/ENOTFOUND|ECONNREFUSED|fetch failed|network|ETIMEDOUT/i.test(m))
+    return `⚠️ Could not reach the Gemini API (network). (${m})`;
+  return `⚠️ LLM error: ${m}`;
+}
 function shortLlm() { return GEMINI_KEY ? 'Gemini' : 'Assistant'; }
 function oneline(s) { return String(s).replace(/\s+/g, ' ').slice(0, 80); }
 function redactArgs(args) {

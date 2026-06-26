@@ -46,9 +46,27 @@ function bubble(role, text) {
   const el = document.createElement('div');
   el.className = `msg ${role}`;
   const who = role === 'user' ? 'You' : role === 'assistant' ? 'Assistant' : '';
-  el.innerHTML = (who ? `<span class="who">${who}</span>` : '') + escapeHtml(text);
+  const head = who ? `<span class="who">${who}</span>` : '';
   chatEl.appendChild(el);
-  scrollChat();
+  // Typewriter reveal for assistant replies; instant for user/system.
+  if (role === 'assistant' && text.length <= 600) {
+    el.innerHTML = head + '<span class="typed"></span>';
+    typewrite(el.querySelector('.typed'), text);
+  } else {
+    el.innerHTML = head + escapeHtml(text);
+    scrollChat();
+  }
+}
+function typewrite(target, text) {
+  let i = 0;
+  const step = Math.max(1, Math.round(text.length / 90)); // finish in ~90 ticks max
+  const tick = () => {
+    i = Math.min(text.length, i + step);
+    target.textContent = text.slice(0, i);
+    scrollChat();
+    if (i < text.length) setTimeout(tick, 16);
+  };
+  tick();
 }
 const systemBubble = (t) => bubble('system', t);
 

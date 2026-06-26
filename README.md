@@ -103,6 +103,19 @@ top-up while every component narrates itself in its own terminal.
 
 `.env` is git‑ignored — your key is never committed.
 
+### Troubleshooting Gemini
+
+* **`429 RESOURCE_EXHAUSTED … limit: 0`** — your API key's Google project has **no
+  free‑tier quota** for the chosen model. Either **enable billing** on the
+  project (AI Studio → *Get API key* → the linked Cloud project), or set a
+  different `GEMINI_MODEL` in `.env` (try `gemini-2.5-flash` or
+  `gemini-1.5-flash`). The error message in chat tells you which case you hit.
+* **`API key not valid`** — double‑check `GEMINI_API_KEY` in `.env`.
+* **Automatic fallback** — on *any* Gemini error (quota, bad key, network) the
+  app shows a clear note and **continues the journey using the offline scripted
+  planner**, so a live demo never dead‑ends. Fix the issue and click **New chat**
+  to use Gemini again.
+
 ## Project layout
 
 ```

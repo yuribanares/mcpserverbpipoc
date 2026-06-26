@@ -57,7 +57,10 @@ export function startBpiApi(port = 4000) {
   app.use(express.urlencoded({ extended: true }));
 
   // Log each request as it arrives and capture the JSON response body.
-  app.use((req, res, next) => {
+  // Simulated network/processing latency so the request and its response land
+  // a beat apart in the terminal — makes the cascade watchable during a demo.
+  const LATENCY = Number(process.env.BPI_API_LATENCY_MS ?? 280);
+  app.use(async (req, res, next) => {
     const tag = `${req.method} ${req.path}`;
     log(C, { level: 'req', dir: '<-', text: tag, data: redact({ ...req.query, ...req.body }) });
     const orig = res.json.bind(res);
@@ -65,6 +68,7 @@ export function startBpiApi(port = 4000) {
       log(C, { level: res.statusCode >= 400 ? 'err' : 'res', dir: '->', text: `${res.statusCode} ${tag}`, data: redact(body) });
       return orig(body);
     };
+    if (LATENCY > 0) await new Promise((r) => setTimeout(r, LATENCY));
     next();
   });
 
