@@ -14,6 +14,7 @@
     <div class="status-cluster">
       <span id="llm-badge" class="badge">LLM: …</span>
       <span id="conn-badge" class="badge badge-dot">connecting…</span>
+      <button id="flow-btn" title="Show the live message-flow sequence diagram">⇄ Flow view</button>
       <button id="reset-btn" title="Start a new conversation">⟲ New chat</button>
     </div>
   </header>
@@ -22,6 +23,13 @@
     <!-- ░░ A.I Chat Center ░░ -->
     <section class="panel chat-panel">
       <div class="panel-head"><span class="dot dot-chat"></span> A.I Chat Center</div>
+      <ol id="stepper" class="stepper" aria-label="Journey progress">
+        <li data-key="connect"><span class="num">1</span><span class="lbl">Connect</span></li>
+        <li data-key="verify"><span class="num">2</span><span class="lbl">Verify</span></li>
+        <li data-key="choose"><span class="num">3</span><span class="lbl">Choose account</span></li>
+        <li data-key="confirm"><span class="num">4</span><span class="lbl">Confirm</span></li>
+        <li data-key="done"><span class="num">5</span><span class="lbl">Done</span></li>
+      </ol>
       <div id="chat" class="chat-scroll"></div>
       <div id="status-line" class="status-line"></div>
       <form id="chat-form" class="chat-input">
@@ -33,19 +41,51 @@
     <!-- ░░ Right column: three CLI terminals ░░ -->
     <section class="terminals">
       <div class="panel term-panel">
-        <div class="panel-head"><span class="dot dot-client"></span> MCP Client Terminal <span class="head-note">partner app ⇄ MCP server (JSON-RPC / stdio)</span></div>
-        <div class="term" id="term-mcp-client"></div>
+        <div class="panel-head"><span class="dot dot-client"></span> MCP Client Terminal
+          <span class="head-meta"><span class="hdot" data-status="mcp-client"></span><span class="lat" data-lat="mcp-client"></span></span>
+          <span class="term-tools"><button class="tbtn" data-act="copy" data-term="mcp-client" title="Copy">⧉</button><button class="tbtn" data-act="clear" data-term="mcp-client" title="Clear">✕</button></span>
+        </div>
+        <div class="term" id="term-mcp-client" data-channel="mcp-client"></div>
       </div>
       <div class="panel term-panel">
-        <div class="panel-head"><span class="dot dot-server"></span> BPI MCP Server Terminal <span class="head-note">tools ⇄ BPI Open Banking API</span></div>
-        <div class="term" id="term-mcp-server"></div>
+        <div class="panel-head"><span class="dot dot-server"></span> BPI MCP Server Terminal
+          <span class="head-meta"><span class="hdot" data-status="mcp-server"></span><span class="lat" data-lat="mcp-server"></span></span>
+          <span class="term-tools"><button class="tbtn" data-act="copy" data-term="mcp-server" title="Copy">⧉</button><button class="tbtn" data-act="clear" data-term="mcp-server" title="Clear">✕</button></span>
+        </div>
+        <div class="term" id="term-mcp-server" data-channel="mcp-server"></div>
       </div>
       <div class="panel term-panel">
-        <div class="panel-head"><span class="dot dot-api"></span> BPI Open Banking API Server Terminal <span class="head-note">HTTP request / response</span></div>
-        <div class="term" id="term-bpi-api"></div>
+        <div class="panel-head"><span class="dot dot-api"></span> BPI Open Banking API Server Terminal
+          <span class="head-meta"><span class="hdot" data-status="bpi-api"></span><span class="lat" data-lat="bpi-api"></span></span>
+          <span class="term-tools"><button class="tbtn" data-act="copy" data-term="bpi-api" title="Copy">⧉</button><button class="tbtn" data-act="clear" data-term="bpi-api" title="Clear">✕</button></span>
+        </div>
+        <div class="term" id="term-bpi-api" data-channel="bpi-api"></div>
       </div>
     </section>
   </main>
+
+  <!-- Request inspector drawer (#9) -->
+  <aside id="inspector" class="inspector" aria-hidden="true">
+    <div class="insp-head">
+      <span id="insp-title">Request inspector</span>
+      <button id="insp-close" title="Close">✕</button>
+    </div>
+    <div id="insp-body" class="insp-body"></div>
+  </aside>
+
+  <!-- Live sequence diagram overlay (#10) -->
+  <div id="flow-overlay" class="flow-overlay" aria-hidden="true">
+    <div class="flow-modal">
+      <div class="flow-head">
+        <span>Live message flow — LLM ⇄ MCP Client ⇄ BPI MCP Server ⇄ BPI Open Banking API</span>
+        <span class="flow-actions"><button id="flow-clear" class="tbtn">Clear</button><button id="flow-close" title="Close">✕</button></span>
+      </div>
+      <div class="flow-stage">
+        <div id="flow-lifelines" class="flow-lifelines"></div>
+        <div id="flow-arrows" class="flow-arrows"></div>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

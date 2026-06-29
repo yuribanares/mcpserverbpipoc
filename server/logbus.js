@@ -35,6 +35,7 @@ export function log(channel, fields = {}) {
     dir: fields.dir || null,
     text: fields.text != null ? String(fields.text) : '',
     data: fields.data ?? null,
+    ms: Number.isFinite(fields.ms) ? fields.ms : null, // round-trip latency, if known
   };
   bus.emit('log', record);
   return record;

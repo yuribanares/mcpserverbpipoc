@@ -21,6 +21,19 @@ The UI is split exactly like the proposed wireframe:
 | **BPI MCP Server Terminal** | The **BPI MCP Server** receiving tool calls and translating them into authenticated HTTP calls to the Open Banking API. |
 | **BPI Open Banking API Server Terminal** | The actual simulated **HTTP request/response** traffic for every Open Banking endpoint, shaped per the API contract. |
 
+## Demo & UI features
+
+Built for live presentation and for inspecting exactly what flows between the layers:
+
+* **Journey stepper** — *Connect → Verify → Choose account → Confirm → Done* lights up above the chat as the customer progresses.
+* **Tool-call chips** — when the LLM invokes a tool, an inline chip shows it running, then ✓ with the round-trip duration.
+* **Per-panel status + latency badges** — each terminal header shows a health dot and rolling latency (last · average ms).
+* **Request inspector** — click any terminal line to open a drawer with the full source, event, latency, timestamp, and pretty-printed payload.
+* **Live sequence diagram** — the **⇄ Flow view** button opens an animated You → LLM → MCP Client → BPI MCP Server → BPI API sequence diagram, drawn from the same event stream.
+* **Terminal tools** — copy / clear per panel; pacing (`PACE_MS`, `BPI_API_LATENCY_MS`) so the cascade is watchable.
+
+![Live message-flow sequence diagram](docs/flow-view.png)
+
 ## Architecture
 
 ```
@@ -102,6 +115,19 @@ top-up while every component narrates itself in its own terminal.
 > to the real model.
 
 `.env` is git‑ignored — your key is never committed.
+
+### Troubleshooting Gemini
+
+* **`429 RESOURCE_EXHAUSTED … limit: 0`** — your API key's Google project has **no
+  free‑tier quota** for the chosen model. Either **enable billing** on the
+  project (AI Studio → *Get API key* → the linked Cloud project), or set a
+  different `GEMINI_MODEL` in `.env` (try `gemini-2.5-flash` or
+  `gemini-1.5-flash`). The error message in chat tells you which case you hit.
+* **`API key not valid`** — double‑check `GEMINI_API_KEY` in `.env`.
+* **Automatic fallback** — on *any* Gemini error (quota, bad key, network) the
+  app shows a clear note and **continues the journey using the offline scripted
+  planner**, so a live demo never dead‑ends. Fix the issue and click **New chat**
+  to use Gemini again.
 
 ## Project layout
 

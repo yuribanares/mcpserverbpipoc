@@ -57,14 +57,19 @@ export function startBpiApi(port = 4000) {
   app.use(express.urlencoded({ extended: true }));
 
   // Log each request as it arrives and capture the JSON response body.
-  app.use((req, res, next) => {
+  // Simulated network/processing latency so the request and its response land
+  // a beat apart in the terminal — makes the cascade watchable during a demo.
+  const LATENCY = Number(process.env.BPI_API_LATENCY_MS ?? 280);
+  app.use(async (req, res, next) => {
     const tag = `${req.method} ${req.path}`;
+    const started = Date.now();
     log(C, { level: 'req', dir: '<-', text: tag, data: redact({ ...req.query, ...req.body }) });
     const orig = res.json.bind(res);
     res.json = (body) => {
-      log(C, { level: res.statusCode >= 400 ? 'err' : 'res', dir: '->', text: `${res.statusCode} ${tag}`, data: redact(body) });
+      log(C, { level: res.statusCode >= 400 ? 'err' : 'res', dir: '->', text: `${res.statusCode} ${tag}`, data: redact(body), ms: Date.now() - started });
       return orig(body);
     };
+    if (LATENCY > 0) await new Promise((r) => setTimeout(r, LATENCY));
     next();
   });
 
@@ -227,12 +232,13 @@ function shorten(v) {
   const s = String(v ?? '');
   return s.length > 12 ? s.slice(0, 8) + '…' : s;
 }
+// Mask secrets only. Long values are kept in full so the request inspector can
+// show the complete payload; the terminal line truncates for display instead.
 function redact(obj) {
   if (!obj || typeof obj !== 'object') return obj;
   const clone = Array.isArray(obj) ? [...obj] : { ...obj };
   for (const k of Object.keys(clone)) {
     if (/secret|password/i.test(k)) clone[k] = '••••••••';
-    else if (typeof clone[k] === 'string' && clone[k].length > 48) clone[k] = clone[k].slice(0, 24) + '…(' + clone[k].length + ')';
   }
   return clone;
 }
