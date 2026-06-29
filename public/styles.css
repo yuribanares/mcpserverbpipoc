@@ -208,6 +208,9 @@ body {
 .flow-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 12.5px; font-weight: 600; }
 .flow-actions { display: flex; gap: 8px; align-items: center; }
 .flow-actions button { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; font-size: 12px; padding: 3px 9px; cursor: pointer; }
+.flow-note { margin: 0; padding: 9px 16px; font-size: 11px; line-height: 1.5; color: var(--muted); background: rgba(88,166,255,.06); border-bottom: 1px solid var(--border); }
+.flow-note b { color: var(--text); font-weight: 600; }
+.flow-note code { font-family: 'JetBrains Mono', monospace; color: var(--c-client); background: rgba(88,166,255,.1); padding: 0 4px; border-radius: 3px; }
 .flow-stage { position: relative; flex: 1; overflow-y: auto; padding: 0; }
 .flow-lifelines { position: sticky; top: 0; display: grid; grid-template-columns: repeat(5, 1fr); background: var(--panel-2); border-bottom: 1px solid var(--border); z-index: 2; }
 .flow-lifelines .ll { text-align: center; padding: 10px 4px; font-size: 11.5px; font-weight: 700; color: var(--text); border-right: 1px dashed var(--border); }

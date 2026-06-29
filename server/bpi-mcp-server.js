@@ -45,6 +45,18 @@ async function bpiFetch(method, path, { headers = {}, json, form, bearer, transa
 
 const TOOLS = [
   {
+    name: 'bpi_begin_authorization',
+    description: 'Begin BPI 3-Legged OAuth. The BPI MCP server (which owns the client_id and the requested scopes) returns the hosted BPI /authorize URL that the partner app should open in a browser/webview for the customer to log in and consent. The customer\'s credentials are entered directly on the BPI page and are never seen by this server.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        state: { type: 'string', description: 'Opaque CSRF state value (optional; generated if omitted)' },
+        redirectUri: { type: 'string', description: 'Partner redirect URI registered during onboarding (optional)' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'bpi_exchange_token',
     description: 'Complete BPI 3-Legged OAuth by exchanging the authorization code for an access token. Returns an opaque sessionId to use in subsequent BPI tool calls. The access token is held securely by the BPI MCP server and never exposed.',
     inputSchema: {
@@ -137,6 +149,20 @@ function requireSession(sessionId) {
 
 async function dispatch(name, args) {
   switch (name) {
+    case 'bpi_begin_authorization': {
+      // The server constructs the authorize URL from the credentials it owns.
+      // No upstream call yet — the customer opens this URL in their browser.
+      const scope = 'transactionalAccountsForBillsPay fundTopUp';
+      const redirectUri = args.redirectUri || 'https://partner.example/callback';
+      const state = args.state || crypto.randomBytes(12).toString('hex');
+      const authorizeUrl = `${BPI_API_URL}/bpi/api/oauth2/authorize?response_type=code` +
+        `&client_id=${encodeURIComponent(CLIENT_ID)}` +
+        `&scope=${encodeURIComponent(scope)}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&state=${encodeURIComponent(state)}`;
+      slog('info', `Authorization initiated by MCP server. scope="${scope}" — returning hosted /authorize URL to client.`);
+      return { authorizeUrl, scope, state, redirectUri };
+    }
     case 'bpi_exchange_token': {
       const r = await bpiFetch('POST', '/bpi/api/oauth2/token', {
         form: { grant_type: 'authorization_code', code: args.code, client_id: CLIENT_ID, client_secret: CLIENT_SECRET },

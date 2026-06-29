@@ -48,7 +48,8 @@ Browser (4 panels) ──WebSocket──┐
                   │ stdio (stdout=JSON-RPC, stderr=logs)
   ┌───────────────▼─────────────────────────────┐
   │ BPI MCP SERVER  (server/bpi-mcp-server.js)   │  real @modelcontextprotocol/sdk server
-  │   tools: bpi_exchange_token,                 │  keeps OAuth tokens server-side
+  │   tools: bpi_begin_authorization,            │  owns client_id/secret;
+  │          bpi_exchange_token,                 │  keeps OAuth tokens server-side
   │          bpi_list_transactional_accounts,    │
   │          bpi_fundtopup_{initiate,send_otp,   │
   │                         process,status}      │
@@ -65,10 +66,14 @@ Browser (4 panels) ──WebSocket──┐
 * The **MCP Client** and **MCP Server** speak the real Model Context Protocol
   (`@modelcontextprotocol/sdk`) over stdio. The server runs as a separate child
   process — genuinely separate components, not a mock.
-* OAuth **front‑channel** steps (the login/OTP pages) are driven by the chat UI,
-  matching how 3‑Legged OAuth keeps credentials away from the partner app. The
-  **back‑channel** `code → token` exchange and all transactional calls go
-  *through MCP*.
+* **3‑Legged OAuth, MCP‑aligned:** the **MCP Server initiates** authorization
+  (`bpi_begin_authorization` returns BPI's hosted `/authorize` URL — it owns the
+  `client_id`/scopes). The customer's **login + OTP happen directly between the
+  MCP Client (browser) and BPI's authorization server** — the MCP Server never
+  sees credentials, per the MCP authorization model. The secret‑protected
+  `code → token` exchange (which needs `client_secret`) and all transactional
+  calls then go **through MCP**, with the access token held server‑side so the
+  LLM never handles raw bearer tokens. Open the **⇄ Flow view** to see this.
 * The Open Banking API is a faithful **mock** of the contract responses — no
   real BPI systems are contacted.
 

@@ -81,7 +81,7 @@ const pace = () => (PACE_MS > 0 ? sleep(PACE_MS) : Promise.resolve());
 
 // One MCP tool call, with both sides narrated on the MCP Client terminal and
 // mirrored as arrows on the live sequence diagram.
-async function mcpCall(ws, name, args) {
+async function mcpCall(ws, name, args, { apiHop = true } = {}) {
   await pace();
   const t0 = Date.now();
   log(CHANNELS.MCP_CLIENT, { level: 'req', dir: '->', text: `tools/call ${name}`, data: redactArgs(args) });
@@ -89,9 +89,12 @@ async function mcpCall(ws, name, args) {
   const res = await mcp.callTool({ name, arguments: args });
   const payload = JSON.parse(res.content?.[0]?.text || '{}');
   const ms = Date.now() - t0;
-  // Each of these MCP tools maps 1:1 to one upstream Open Banking API call.
-  flow(ws, 'SERVER', 'API', name);
-  flow(ws, 'API', 'SERVER', res.isError ? 'error' : '200 OK');
+  // Most BPI MCP tools map 1:1 to one upstream Open Banking API call; a few
+  // (e.g. bpi_begin_authorization) only build/return data and hit no API.
+  if (apiHop) {
+    flow(ws, 'SERVER', 'API', name);
+    flow(ws, 'API', 'SERVER', res.isError ? 'error' : '200 OK');
+  }
   if (res.isError) {
     log(CHANNELS.MCP_CLIENT, { level: 'err', dir: '<-', text: `tools/call ${name} error`, data: payload, ms });
     flow(ws, 'SERVER', 'CLIENT', 'error');
@@ -270,17 +273,24 @@ function runTool(ws, name, args) {
 
 async function connectBpi(ws) {
   if (ws.state.connected) { markConnectedSteps(ws); return { status: 'already_connected', scope: ws.state.scope }; }
-  const scope = 'transactionalAccountsForBillsPay fundTopUp';
   const state = crypto.randomBytes(12).toString('hex');
   step(ws, 'connect', 'active');
 
-  // Front-channel: the partner app opens BPI's hosted /authorize (login) page.
-  log(CHANNELS.MCP_CLIENT, { level: 'info', text: 'OAuth: opening BPI /authorize (front-channel browser)…' });
-  await bpiFront(ws, 'GET', `/bpi/api/oauth2/authorize?response_type=code&client_id=${process.env.BPI_CLIENT_ID || 'a3f7832f-0f15-46e2-9070-29e6e89f2c2e'}&scope=${encodeURIComponent(scope)}&redirect_uri=https://partner.example/callback&state=${state}`);
+  // The MCP server owns the client_id + scopes and initiates the OAuth handshake:
+  // it returns the hosted BPI /authorize URL for the partner app to open.
+  const authz = await mcpCall(ws, 'bpi_begin_authorization', { state }, { apiHop: false });
+  const scope = authz.scope;
+
+  // Front-channel: the partner app opens that /authorize URL in a browser. The
+  // customer's credentials/OTP are entered on BPI's page — the MCP server never
+  // sees them.
+  log(CHANNELS.MCP_CLIENT, { level: 'info', text: 'OAuth: opening BPI /authorize URL from MCP server (front-channel browser)…' });
+  const u = new URL(authz.authorizeUrl);
+  await bpiFront(ws, 'GET', u.pathname + u.search);
 
   // Screen 1: BPI login.
   const creds = await askUI(ws, 'login', { partner: PARTNER, scope });
-  const login = await bpiFront(ws, 'POST', '/bpi/api/oauth2/login', { username: creds.username, password: creds.password, scope, state });
+  const login = await bpiFront(ws, 'POST', '/bpi/api/oauth2/login', { username: creds.username, password: creds.password, scope, state: authz.state });
   step(ws, 'connect', 'done');
 
   // Screen 2: login OTP.
