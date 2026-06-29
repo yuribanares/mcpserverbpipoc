@@ -148,6 +148,82 @@ body {
 ::-webkit-scrollbar-thumb { background: #2c3543; border-radius: 6px; }
 .chat-scroll::-webkit-scrollbar-thumb { background: #c9ced6; }
 
+/* ── Header buttons ──────────────────────────────────── */
+#flow-btn { font-size: 12px; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); padding: 5px 10px; border-radius: 7px; cursor: pointer; }
+#flow-btn:hover { border-color: var(--c-server); }
+
+/* ── Journey stepper (#2) ────────────────────────────── */
+.stepper { display: flex; list-style: none; margin: 0; padding: 10px 12px; gap: 6px; background: #fff; border-bottom: 1px solid #e2e5ea; overflow-x: auto; }
+.stepper li { display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0; font-size: 11.5px; color: #9aa3af; position: relative; white-space: nowrap; }
+.stepper li:not(:last-child)::after { content: ''; flex: 1; height: 2px; background: #e2e5ea; margin-left: 4px; min-width: 10px; }
+.stepper .num { width: 20px; height: 20px; border-radius: 50%; background: #e2e5ea; color: #fff; display: grid; place-items: center; font-size: 11px; font-weight: 700; flex: 0 0 auto; transition: .2s; }
+.stepper .lbl { font-weight: 500; }
+.stepper li.active .num { background: var(--bpi-red); box-shadow: 0 0 0 3px rgba(177,17,22,.18); }
+.stepper li.active { color: var(--bpi-red); }
+.stepper li.active .lbl { font-weight: 700; }
+.stepper li.done .num { background: var(--c-api); }
+.stepper li.done { color: #5b6675; }
+.stepper li.done .num::after { content: '✓'; }
+.stepper li.done .num { font-size: 0; }
+.stepper li.done .num::after { font-size: 12px; }
+
+/* ── Tool-call chips in chat (#15) ───────────────────── */
+.toolchip { align-self: flex-start; display: inline-flex; align-items: center; gap: 8px; background: #f0eefe; border: 1px solid #d9d2fb; color: #5a45c8; border-radius: 999px; padding: 6px 12px; font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+.toolchip .spin { width: 11px; height: 11px; border: 2px solid #c9bdf5; border-top-color: #5a45c8; border-radius: 50%; animation: spin .7s linear infinite; }
+.toolchip.done { background: #e9f7ee; border-color: #bfe6cd; color: #1a7f3c; }
+.toolchip.error { background: #fdecec; border-color: #f3c0c0; color: #c0341d; }
+.toolchip .ms { opacity: .7; font-size: 11px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Terminal header meta + tools (#11) ──────────────── */
+.head-meta { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
+.hdot { width: 8px; height: 8px; border-radius: 50%; background: #5a6472; transition: .2s; }
+.hdot.online { background: var(--c-api); box-shadow: 0 0 6px rgba(63,185,80,.6); }
+.lat { font-size: 10.5px; color: var(--muted); font-family: 'JetBrains Mono', monospace; min-width: 38px; }
+.term-tools { margin-left: auto; display: flex; gap: 4px; }
+.tbtn { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 5px; font-size: 11px; padding: 1px 6px; cursor: pointer; line-height: 1.4; }
+.tbtn:hover { color: var(--text); border-color: var(--c-client); }
+.line { cursor: pointer; border-radius: 4px; padding: 0 3px; margin: 0 -3px; }
+.line:hover { background: rgba(88,166,255,.08); }
+
+/* ── Request inspector drawer (#9) ───────────────────── */
+.inspector { position: fixed; top: 0; right: 0; width: 460px; max-width: 92vw; height: 100vh; background: #0f141b; border-left: 1px solid var(--border); box-shadow: -16px 0 40px rgba(0,0,0,.45); transform: translateX(100%); transition: transform .22s ease; z-index: 50; display: flex; flex-direction: column; }
+.inspector.open { transform: translateX(0); }
+.insp-head { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 13px; }
+.insp-head button { background: transparent; border: none; color: var(--muted); font-size: 16px; cursor: pointer; }
+.insp-body { padding: 14px 16px; overflow-y: auto; font-size: 12px; }
+.insp-body .row { margin-bottom: 14px; }
+.insp-body .k { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+.insp-body .v { color: var(--text); }
+.insp-body pre { background: #0a0d12; border: 1px solid var(--border); border-radius: 7px; padding: 11px; margin: 0; overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.insp-pill { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 5px; font-family: 'JetBrains Mono', monospace; }
+.insp-pill.client { background: rgba(88,166,255,.15); color: var(--c-client); }
+.insp-pill.server { background: rgba(210,168,255,.15); color: var(--c-server); }
+.insp-pill.api { background: rgba(63,185,80,.15); color: var(--c-api); }
+
+/* ── Live sequence diagram (#10) ─────────────────────── */
+.flow-overlay { position: fixed; inset: 0; background: rgba(4,7,11,.72); display: none; align-items: center; justify-content: center; z-index: 60; }
+.flow-overlay.open { display: flex; }
+.flow-modal { width: min(960px, 94vw); height: min(680px, 90vh); background: var(--panel); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
+.flow-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 12.5px; font-weight: 600; }
+.flow-actions { display: flex; gap: 8px; align-items: center; }
+.flow-actions button { background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; font-size: 12px; padding: 3px 9px; cursor: pointer; }
+.flow-stage { position: relative; flex: 1; overflow-y: auto; padding: 0; }
+.flow-lifelines { position: sticky; top: 0; display: grid; grid-template-columns: repeat(5, 1fr); background: var(--panel-2); border-bottom: 1px solid var(--border); z-index: 2; }
+.flow-lifelines .ll { text-align: center; padding: 10px 4px; font-size: 11.5px; font-weight: 700; color: var(--text); border-right: 1px dashed var(--border); }
+.flow-lifelines .ll:last-child { border-right: none; }
+.flow-lifelines .ll small { display: block; font-weight: 400; color: var(--muted); font-size: 9.5px; margin-top: 2px; }
+.flow-arrows { position: relative; padding: 8px 0 24px; }
+.flow-msg { position: relative; height: 30px; display: flex; align-items: center; animation: fadein .25s ease; }
+.flow-msg .seg { position: absolute; height: 0; border-top: 2px solid var(--c-client); }
+.flow-msg .seg.s-api { border-color: var(--c-api); }
+.flow-msg .seg.s-server { border-color: var(--c-server); }
+.flow-msg .seg.s-llm { border-color: var(--bpi-red); }
+.flow-msg .head { position: absolute; top: -4px; width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; }
+.flow-msg .cap { position: absolute; top: -16px; font-size: 10px; color: var(--muted); font-family: 'JetBrains Mono', monospace; white-space: nowrap; transform: translateX(-50%); background: var(--panel); padding: 0 4px; }
+.flow-empty { text-align: center; color: var(--muted); font-style: italic; padding: 40px; }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+
 @media (max-width: 1100px) {
   #ui { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
 }

@@ -37,8 +37,47 @@ function handle(msg) {
     case 'status': statusLine.textContent = msg.text || ''; break;
     case 'busy': setBusy(msg.value); break;
     case 'ui': renderScreen(msg); break;
-    case 'reset-ok': chatEl.innerHTML = ''; greet(); break;
+    case 'step': setStep(msg.key, msg.state); break;
+    case 'steps-reset': resetStepper(); break;
+    case 'toolchip': toolChip(msg); break;
+    case 'flow': flowArrow(msg); break;
+    case 'reset-ok': chatEl.innerHTML = ''; resetStepper(); clearFlow(); greet(); break;
   }
+}
+
+// ── Journey stepper (#2) ─────────────────────────────────
+function setStep(key, state) {
+  const li = document.querySelector(`#stepper li[data-key="${key}"]`);
+  if (!li) return;
+  if (state === 'done') { li.classList.add('done'); li.classList.remove('active'); }
+  else if (state === 'active') { li.classList.add('active'); }
+}
+function resetStepper() {
+  document.querySelectorAll('#stepper li').forEach((li) => li.classList.remove('active', 'done'));
+}
+
+// ── Tool-call chips (#15) ────────────────────────────────
+const chips = new Map();
+function toolChip(msg) {
+  let el = chips.get(msg.id);
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'toolchip';
+    chatEl.appendChild(el);
+    chips.set(msg.id, el);
+  }
+  const ms = msg.ms != null ? `<span class="ms">${msg.ms} ms</span>` : '';
+  if (msg.status === 'running') {
+    el.className = 'toolchip';
+    el.innerHTML = `<span class="spin"></span> 🔧 <b>${escapeHtml(msg.name)}</b> running…`;
+  } else if (msg.status === 'done') {
+    el.className = 'toolchip done';
+    el.innerHTML = `✓ 🔧 <b>${escapeHtml(msg.name)}</b> ${ms}`;
+  } else {
+    el.className = 'toolchip error';
+    el.innerHTML = `✕ 🔧 <b>${escapeHtml(msg.name)}</b> failed ${ms}`;
+  }
+  scrollChat();
 }
 
 // ── Chat rendering ───────────────────────────────────────
@@ -79,23 +118,45 @@ function setBusy(v) {
 function scrollChat() { chatEl.scrollTop = chatEl.scrollHeight; }
 
 // ── Terminal rendering ───────────────────────────────────
+const records = new Map(); // record.id -> record (for the inspector)
 function renderLog(r) {
   const term = termEls[r.channel];
   if (!term) return;
+  records.set(r.id, r);
+  markOnline(r.channel);
+  if (r.ms != null) setLatency(r.channel, r.ms);
+
   const empty = term.querySelector('.term-empty');
   if (empty) empty.remove();
   const line = document.createElement('div');
   line.className = `line lvl-${r.level}`;
+  line.dataset.id = r.id;
   const ts = new Date(r.ts).toLocaleTimeString('en-GB', { hour12: false });
   const arrow = r.dir ? `<span class="arrow">${r.dir}</span>` : '';
+  const msTag = r.ms != null ? `<span class="data"> · ${r.ms}ms</span>` : '';
   let data = '';
   if (r.data != null) {
-    const txt = typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
+    let txt = typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
+    if (txt.length > 140) txt = txt.slice(0, 140) + '…'; // inline preview; full body in inspector
     data = `<span class="data">${escapeHtml(txt)}</span>`;
   }
-  line.innerHTML = `<span class="ts">${ts}</span>${arrow}<span class="body">${escapeHtml(r.text)}${data}</span>`;
+  line.innerHTML = `<span class="ts">${ts}</span>${arrow}<span class="body">${escapeHtml(r.text)}${msTag}${data}</span>`;
+  line.addEventListener('click', () => openInspector(r.id));
   term.appendChild(line);
   term.scrollTop = term.scrollHeight;
+}
+
+// ── Panel status + latency badges (#11) ──────────────────
+const latStats = {};
+function markOnline(channel) {
+  const dot = document.querySelector(`.hdot[data-status="${channel}"]`);
+  if (dot) dot.classList.add('online');
+}
+function setLatency(channel, ms) {
+  const s = latStats[channel] || (latStats[channel] = { n: 0, avg: 0 });
+  s.n++; s.avg = s.avg + (ms - s.avg) / s.n;
+  const el = document.querySelector(`.lat[data-lat="${channel}"]`);
+  if (el) el.textContent = `${ms}ms · ~${Math.round(s.avg)}`;
 }
 
 // ── BPI simulated screens ────────────────────────────────
@@ -248,6 +309,92 @@ function submit(text) {
 
 $('#chat-form').addEventListener('submit', (e) => { e.preventDefault(); submit($('#chat-text').value); });
 $('#reset-btn').addEventListener('click', () => sendWs({ type: 'reset' }));
+
+// ── Request inspector drawer (#9) ────────────────────────
+const CHANNEL_LABEL = { 'mcp-client': ['MCP Client', 'client'], 'mcp-server': ['BPI MCP Server', 'server'], 'bpi-api': ['BPI Open Banking API', 'api'] };
+function openInspector(id) {
+  const r = records.get(id);
+  if (!r) return;
+  const [label, cls] = CHANNEL_LABEL[r.channel] || [r.channel, 'client'];
+  const body = $('#insp-body');
+  const dataBlock = r.data == null ? '<span class="v">—</span>'
+    : `<pre>${escapeHtml(typeof r.data === 'string' ? r.data : JSON.stringify(r.data, null, 2))}</pre>`;
+  body.innerHTML = `
+    <div class="row"><div class="k">Source</div><div class="v"><span class="insp-pill ${cls}">${escapeHtml(label)}</span></div></div>
+    <div class="row"><div class="k">Event</div><div class="v">${r.dir ? escapeHtml(r.dir) + ' ' : ''}${escapeHtml(r.text)}</div></div>
+    <div class="row"><div class="k">Level</div><div class="v">${escapeHtml(r.level)}</div></div>
+    ${r.ms != null ? `<div class="row"><div class="k">Latency</div><div class="v">${r.ms} ms</div></div>` : ''}
+    <div class="row"><div class="k">Timestamp</div><div class="v">${escapeHtml(new Date(r.ts).toLocaleString())}</div></div>
+    <div class="row"><div class="k">Payload</div><div class="v">${dataBlock}</div></div>`;
+  $('#insp-title').textContent = `Inspector · ${label}`;
+  const insp = $('#inspector');
+  insp.classList.add('open'); insp.setAttribute('aria-hidden', 'false');
+}
+function closeInspector() { const i = $('#inspector'); i.classList.remove('open'); i.setAttribute('aria-hidden', 'true'); }
+$('#insp-close').addEventListener('click', closeInspector);
+
+// ── Terminal tools: copy / clear ─────────────────────────
+document.querySelectorAll('.tbtn[data-term]').forEach((btn) => {
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const term = termEls[btn.dataset.term];
+    if (!term) return;
+    if (btn.dataset.act === 'clear') { term.innerHTML = '<div class="term-empty">cleared</div>'; }
+    else if (btn.dataset.act === 'copy') { navigator.clipboard?.writeText(term.innerText).then(() => { btn.textContent = '✓'; setTimeout(() => (btn.textContent = '⧉'), 900); }); }
+  });
+});
+
+// ── Live sequence diagram (#10) ──────────────────────────
+const ACTORS = ['YOU', 'LLM', 'CLIENT', 'SERVER', 'API'];
+const ACTOR_META = {
+  YOU: ['You', 'customer'], LLM: ['LLM', 'Gemini'], CLIENT: ['MCP Client', 'partner app'],
+  SERVER: ['BPI MCP Server', 'tools'], API: ['BPI API', 'Open Banking'],
+};
+let flowBuffer = [];
+function initLifelines() {
+  const ll = $('#flow-lifelines');
+  if (ll.childElementCount) return;
+  ll.innerHTML = ACTORS.map((a) => `<div class="ll">${ACTOR_META[a][0]}<small>${ACTOR_META[a][1]}</small></div>`).join('');
+}
+function flowArrow(msg) {
+  flowBuffer.push(msg);
+  if (flowBuffer.length > 400) flowBuffer.shift();
+  if ($('#flow-overlay').classList.contains('open')) drawArrow(msg);
+}
+function drawArrow(msg) {
+  const fromI = ACTORS.indexOf(msg.from), toI = ACTORS.indexOf(msg.to);
+  if (fromI < 0 || toI < 0) return;
+  const stage = $('#flow-arrows');
+  const empty = stage.querySelector('.flow-empty'); if (empty) empty.remove();
+  const row = document.createElement('div'); row.className = 'flow-msg';
+  const colW = 100 / ACTORS.length;
+  const x1 = colW * (fromI + 0.5), x2 = colW * (toI + 0.5);
+  const left = Math.min(x1, x2), width = Math.abs(x2 - x1);
+  const dir = x2 >= x1 ? 1 : -1;
+  const colorCls = msg.to === 'API' || msg.from === 'API' ? 's-api'
+    : msg.to === 'SERVER' || msg.from === 'SERVER' ? 's-server'
+    : msg.to === 'YOU' || msg.from === 'YOU' ? 's-llm' : '';
+  row.innerHTML = `
+    <div class="seg ${colorCls}" style="left:${left}%;width:${width}%;top:50%"></div>
+    <div class="head" style="left:${x2}%;top:50%;${dir > 0 ? 'border-left:6px solid currentColor' : 'border-right:6px solid currentColor'}"></div>
+    <div class="cap" style="left:${(x1 + x2) / 2}%">${escapeHtml(msg.label || '')}</div>`;
+  row.querySelector('.head').style.color = getComputedStyle(row.querySelector('.seg')).borderTopColor;
+  stage.appendChild(row);
+  stage.parentElement.scrollTop = stage.parentElement.scrollHeight;
+}
+function redrawFlow() {
+  const stage = $('#flow-arrows');
+  stage.innerHTML = flowBuffer.length ? '' : '<div class="flow-empty">No messages yet — send a request in the chat, then watch them appear here.</div>';
+  flowBuffer.forEach(drawArrow);
+}
+function clearFlow() { flowBuffer = []; const s = $('#flow-arrows'); if (s) s.innerHTML = '<div class="flow-empty">Cleared.</div>'; }
+function openFlow() { initLifelines(); $('#flow-overlay').classList.add('open'); $('#flow-overlay').setAttribute('aria-hidden', 'false'); redrawFlow(); }
+function closeFlow() { $('#flow-overlay').classList.remove('open'); $('#flow-overlay').setAttribute('aria-hidden', 'true'); }
+$('#flow-btn').addEventListener('click', openFlow);
+$('#flow-close').addEventListener('click', closeFlow);
+$('#flow-clear').addEventListener('click', clearFlow);
+$('#flow-overlay').addEventListener('click', (e) => { if (e.target.id === 'flow-overlay') closeFlow(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeFlow(); closeInspector(); } });
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

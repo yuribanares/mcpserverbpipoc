@@ -21,8 +21,8 @@ const CLIENT_SECRET = process.env.BPI_CLIENT_SECRET || 'rF1yE3tQ4rP2tY2qQ8dQ4sM0
 // session map kept inside the MCP server: the LLM only ever sees a sessionId.
 const sessions = new Map(); // sessionId -> { access_token, scope }
 
-function slog(level, text, data) {
-  process.stderr.write(JSON.stringify({ __mcplog: true, level, text, data: data ?? null }) + '\n');
+function slog(level, text, data, ms) {
+  process.stderr.write(JSON.stringify({ __mcplog: true, level, text, data: data ?? null, ms: Number.isFinite(ms) ? ms : null }) + '\n');
 }
 
 async function bpiFetch(method, path, { headers = {}, json, form, bearer, transactionId } = {}) {
@@ -36,9 +36,10 @@ async function bpiFetch(method, path, { headers = {}, json, form, bearer, transa
   if (json) { h['Content-Type'] = 'application/json'; body = JSON.stringify(json); }
   if (form) { h['Content-Type'] = 'application/x-www-form-urlencoded'; body = new URLSearchParams(form).toString(); }
   slog('http', `→ ${method} ${path}`);
+  const started = Date.now();
   const res = await fetch(url, { method, headers: h, body });
   const data = await res.json().catch(() => ({}));
-  slog(res.ok ? 'ok' : 'err', `← ${res.status} ${path}`);
+  slog(res.ok ? 'ok' : 'err', `← ${res.status} ${path}`, null, Date.now() - started);
   return { ok: res.ok, status: res.status, data, transactionId: res.headers.get('transactionId') };
 }
 

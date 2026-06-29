@@ -59,7 +59,7 @@ async function startMcpClient() {
       if (!line.trim()) return;
       try {
         const o = JSON.parse(line);
-        if (o.__mcplog) return void log(CHANNELS.MCP_SERVER, { level: o.level, text: o.text, data: o.data });
+        if (o.__mcplog) return void log(CHANNELS.MCP_SERVER, { level: o.level, text: o.text, data: o.data, ms: o.ms });
       } catch { /* not JSON */ }
       log(CHANNELS.MCP_SERVER, { level: 'info', text: line });
     });
@@ -79,17 +79,26 @@ const PACE_MS = Number(process.env.PACE_MS ?? 350);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const pace = () => (PACE_MS > 0 ? sleep(PACE_MS) : Promise.resolve());
 
-// One MCP tool call, with both sides narrated on the MCP Client terminal.
-async function mcpCall(name, args) {
+// One MCP tool call, with both sides narrated on the MCP Client terminal and
+// mirrored as arrows on the live sequence diagram.
+async function mcpCall(ws, name, args) {
   await pace();
+  const t0 = Date.now();
   log(CHANNELS.MCP_CLIENT, { level: 'req', dir: '->', text: `tools/call ${name}`, data: redactArgs(args) });
+  flow(ws, 'CLIENT', 'SERVER', `tools/call ${name}`);
   const res = await mcp.callTool({ name, arguments: args });
   const payload = JSON.parse(res.content?.[0]?.text || '{}');
+  const ms = Date.now() - t0;
+  // Each of these MCP tools maps 1:1 to one upstream Open Banking API call.
+  flow(ws, 'SERVER', 'API', name);
+  flow(ws, 'API', 'SERVER', res.isError ? 'error' : '200 OK');
   if (res.isError) {
-    log(CHANNELS.MCP_CLIENT, { level: 'err', dir: '<-', text: `tools/call ${name} error`, data: payload });
+    log(CHANNELS.MCP_CLIENT, { level: 'err', dir: '<-', text: `tools/call ${name} error`, data: payload, ms });
+    flow(ws, 'SERVER', 'CLIENT', 'error');
     throw new Error(payload.error || `${name} failed`);
   }
-  log(CHANNELS.MCP_CLIENT, { level: 'res', dir: '<-', text: `tools/call ${name} result`, data: payload });
+  log(CHANNELS.MCP_CLIENT, { level: 'res', dir: '<-', text: `tools/call ${name} result`, data: payload, ms });
+  flow(ws, 'SERVER', 'CLIENT', `${name} result`);
   return payload;
 }
 
@@ -130,6 +139,12 @@ wss.on('connection', (ws) => {
 
 function send(ws, msg) { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg)); }
 
+// Live sequence-diagram arrow between two lifelines (You/LLM/CLIENT/SERVER/API).
+function flow(ws, from, to, label) { send(ws, { type: 'flow', from, to, label }); }
+// Journey stepper update. key: connect|verify|choose|confirm|done ; state: active|done.
+function step(ws, key, state) { send(ws, { type: 'step', key, state }); }
+function markConnectedSteps(ws) { step(ws, 'connect', 'done'); step(ws, 'verify', 'done'); }
+
 function freshState() {
   return { contents: [], sessionId: null, selectedAccount: null, transactionId: null, connected: false };
 }
@@ -166,11 +181,13 @@ async function onUserChat(ws, text) {
   if (!text) return;
   send(ws, { type: 'chat', role: 'user', text });
   log(CHANNELS.CHAT, { level: 'llm', text: `User → LLM: "${text}"` });
+  send(ws, { type: 'steps-reset' });
+  flow(ws, 'YOU', 'LLM', 'prompt');
   ws.state.contents.push({ role: 'user', parts: [{ text }] });
   send(ws, { type: 'busy', value: true });
 
   try {
-    for (let step = 0; step < 10; step++) {
+    for (let turn = 0; turn < 10; turn++) {
       send(ws, { type: 'status', text: `${shortLlm()} is thinking…` });
 
       const engine = ws.fellBack ? mockLlm : llm;
@@ -195,6 +212,7 @@ async function onUserChat(ws, text) {
       if (!calls || calls.length === 0) {
         if (reply) {
           ws.state.contents.push({ role: 'model', parts: [{ text: reply }] });
+          flow(ws, 'LLM', 'YOU', 'reply');
           send(ws, { type: 'chat', role: 'assistant', text: reply });
           log(CHANNELS.CHAT, { level: 'llm', text: `LLM → User: "${oneline(reply)}"` });
         }
@@ -221,7 +239,27 @@ async function onUserChat(ws, text) {
 }
 
 // ── Tool implementations (LLM-facing journeys) ──────────────────────────────
+// Wrap every tool call with a chat tool-chip (running → done/error + duration)
+// and LLM⇄MCP-Client arrows on the sequence diagram.
 async function executeTool(ws, name, args) {
+  const chipId = crypto.randomUUID();
+  send(ws, { type: 'toolchip', id: chipId, name, status: 'running' });
+  flow(ws, 'LLM', 'CLIENT', name);
+  const t0 = Date.now();
+  try {
+    const res = await runTool(ws, name, args);
+    const status = res && res.error ? 'error' : 'done';
+    send(ws, { type: 'toolchip', id: chipId, name, status, ms: Date.now() - t0 });
+    flow(ws, 'CLIENT', 'LLM', status === 'error' ? 'error' : 'result');
+    return res;
+  } catch (err) {
+    send(ws, { type: 'toolchip', id: chipId, name, status: 'error', ms: Date.now() - t0 });
+    flow(ws, 'CLIENT', 'LLM', 'error');
+    throw err;
+  }
+}
+
+function runTool(ws, name, args) {
   switch (name) {
     case 'connect_bpi_account': return connectBpi(ws);
     case 'list_bpi_accounts':   return listAccounts(ws);
@@ -231,35 +269,41 @@ async function executeTool(ws, name, args) {
 }
 
 async function connectBpi(ws) {
-  if (ws.state.connected) return { status: 'already_connected', scope: ws.state.scope };
+  if (ws.state.connected) { markConnectedSteps(ws); return { status: 'already_connected', scope: ws.state.scope }; }
   const scope = 'transactionalAccountsForBillsPay fundTopUp';
   const state = crypto.randomBytes(12).toString('hex');
+  step(ws, 'connect', 'active');
 
   // Front-channel: the partner app opens BPI's hosted /authorize (login) page.
   log(CHANNELS.MCP_CLIENT, { level: 'info', text: 'OAuth: opening BPI /authorize (front-channel browser)…' });
-  await bpiFront('GET', `/bpi/api/oauth2/authorize?response_type=code&client_id=${process.env.BPI_CLIENT_ID || 'a3f7832f-0f15-46e2-9070-29e6e89f2c2e'}&scope=${encodeURIComponent(scope)}&redirect_uri=https://partner.example/callback&state=${state}`);
+  await bpiFront(ws, 'GET', `/bpi/api/oauth2/authorize?response_type=code&client_id=${process.env.BPI_CLIENT_ID || 'a3f7832f-0f15-46e2-9070-29e6e89f2c2e'}&scope=${encodeURIComponent(scope)}&redirect_uri=https://partner.example/callback&state=${state}`);
 
   // Screen 1: BPI login.
   const creds = await askUI(ws, 'login', { partner: PARTNER, scope });
-  const login = await bpiFront('POST', '/bpi/api/oauth2/login', { username: creds.username, password: creds.password, scope, state });
+  const login = await bpiFront(ws, 'POST', '/bpi/api/oauth2/login', { username: creds.username, password: creds.password, scope, state });
+  step(ws, 'connect', 'done');
 
   // Screen 2: login OTP.
+  step(ws, 'verify', 'active');
   const otp = await askUI(ws, 'login-otp', { mobile: login.mobileNumber });
-  const verified = await bpiFront('POST', '/bpi/api/oauth2/login/otp', { loginTxnId: login.loginTxnId, otp: otp.otp });
+  const verified = await bpiFront(ws, 'POST', '/bpi/api/oauth2/login/otp', { loginTxnId: login.loginTxnId, otp: otp.otp });
   log(CHANNELS.MCP_CLIENT, { level: 'ok', text: 'OAuth: authorization code received at redirect_uri' });
 
   // Back-channel: exchange the code for a token *through the MCP server*.
-  const tokenInfo = await mcpCall('bpi_exchange_token', { code: verified.code });
+  const tokenInfo = await mcpCall(ws, 'bpi_exchange_token', { code: verified.code });
   ws.state.sessionId = tokenInfo.sessionId;
   ws.state.scope = tokenInfo.scope;
   ws.state.connected = true;
+  step(ws, 'verify', 'done');
   send(ws, { type: 'ui', screen: 'connected', payload: { scope: tokenInfo.scope } });
   return { status: 'connected', scope: tokenInfo.scope, expires_in: tokenInfo.expires_in };
 }
 
 async function listAccounts(ws) {
   if (!ws.state.connected) return { error: 'Not connected. Call connect_bpi_account first.' };
-  const body = await mcpCall('bpi_list_transactional_accounts', { sessionId: ws.state.sessionId });
+  markConnectedSteps(ws);
+  step(ws, 'choose', 'active');
+  const body = await mcpCall(ws, 'bpi_list_transactional_accounts', { sessionId: ws.state.sessionId });
   const accounts = body.transactionalAccounts || [];
   // Screen 3: account selection.
   const chosen = await askUI(ws, 'accounts', {
@@ -267,6 +311,7 @@ async function listAccounts(ws) {
   });
   const sel = accounts.find((a) => a.accountNumberToken === chosen.accountNumberToken) || accounts[0];
   ws.state.selectedAccount = sel;
+  step(ws, 'choose', 'done');
   log(CHANNELS.CHAT, { level: 'info', text: `Customer selected source account: ${sel.accountPreferredName} (${sel.accountNumber})` });
   return { selectedAccount: { name: sel.accountPreferredName, accountNumber: sel.accountNumber }, availableAccounts: accounts.length };
 }
@@ -277,8 +322,9 @@ async function fundTopup(ws, args) {
   const amount = Number(args.amount);
   if (!Number.isFinite(amount) || amount <= 0) return { error: 'Invalid amount.' };
   const acct = ws.state.selectedAccount;
+  markConnectedSteps(ws); step(ws, 'choose', 'done'); step(ws, 'confirm', 'active');
 
-  const init = await mcpCall('bpi_fundtopup_initiate', {
+  const init = await mcpCall(ws, 'bpi_fundtopup_initiate', {
     sessionId: ws.state.sessionId,
     accountNumberToken: acct.accountNumberToken,
     amount,
@@ -287,7 +333,7 @@ async function fundTopup(ws, args) {
   });
   ws.state.transactionId = init.transactionId;
 
-  await mcpCall('bpi_fundtopup_send_otp', {
+  await mcpCall(ws, 'bpi_fundtopup_send_otp', {
     sessionId: ws.state.sessionId,
     transactionId: init.transactionId,
     mobileNumberToken: init.mobileNumberToken,
@@ -296,12 +342,13 @@ async function fundTopup(ws, args) {
   // Screen 4: transaction OTP.
   const otp = await askUI(ws, 'txn-otp', { mobile: init.mobileNumber, amount, account: acct.accountPreferredName });
 
-  const result = await mcpCall('bpi_fundtopup_process', {
+  const result = await mcpCall(ws, 'bpi_fundtopup_process', {
     sessionId: ws.state.sessionId,
     transactionId: init.transactionId,
     otp: otp.otp,
   });
 
+  step(ws, 'confirm', 'done'); step(ws, 'done', 'done');
   send(ws, { type: 'ui', screen: 'receipt', payload: { amount, account: acct.accountPreferredName, accountNumber: acct.accountNumber, ...result } });
   return {
     status: 'SUCCESSFUL',
@@ -314,11 +361,14 @@ async function fundTopup(ws, args) {
 
 // Direct (front-channel) call to the BPI OAuth endpoints — represents the
 // customer's browser talking to BPI's hosted login, not an MCP call.
-async function bpiFront(method, pathName, body) {
+async function bpiFront(ws, method, pathName, body) {
+  const shortPath = pathName.split('?')[0];
+  flow(ws, 'CLIENT', 'API', `${method} ${shortPath}`);
   const opts = { method, headers: {} };
   if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   const res = await fetch(`${BPI_API_URL}${pathName}`, opts);
   const data = await res.json().catch(() => ({}));
+  flow(ws, 'API', 'CLIENT', res.ok ? '200 OK' : `error ${res.status}`);
   if (!res.ok) throw new Error(data.error || `BPI ${pathName} failed (${res.status})`);
   return data;
 }
