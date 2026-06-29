@@ -31,6 +31,10 @@ const WEB_PORT = Number(process.env.PORT || 3000);
 const BPI_PORT = Number(process.env.BPI_API_PORT || 4000);
 const BPI_API_URL = `http://localhost:${BPI_PORT}`;
 const PARTNER = process.env.PARTNER_NAME || 'DRAGONPAY CORP';
+// The partner app's MCP-layer credentials used to authenticate to BPI's MCP
+// server (NOT BPI Open Banking credentials — those live in BPI's vault).
+const PARTNER_MCP_CLIENT_ID = process.env.PARTNER_MCP_CLIENT_ID || 'mcp_dragonpay_7f3a91';
+const PARTNER_MCP_CLIENT_SECRET = process.env.PARTNER_MCP_CLIENT_SECRET || 'mcps_dragonpay_4b9c2e7f10a8d6';
 
 // ── LLM selection ──────────────────────────────────────────────────────────
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -81,7 +85,7 @@ const pace = () => (PACE_MS > 0 ? sleep(PACE_MS) : Promise.resolve());
 
 // One MCP tool call, with both sides narrated on the MCP Client terminal and
 // mirrored as arrows on the live sequence diagram.
-async function mcpCall(ws, name, args) {
+async function mcpCall(ws, name, args, { apiHop = true } = {}) {
   await pace();
   const t0 = Date.now();
   log(CHANNELS.MCP_CLIENT, { level: 'req', dir: '->', text: `tools/call ${name}`, data: redactArgs(args) });
@@ -89,9 +93,12 @@ async function mcpCall(ws, name, args) {
   const res = await mcp.callTool({ name, arguments: args });
   const payload = JSON.parse(res.content?.[0]?.text || '{}');
   const ms = Date.now() - t0;
-  // Each of these MCP tools maps 1:1 to one upstream Open Banking API call.
-  flow(ws, 'SERVER', 'API', name);
-  flow(ws, 'API', 'SERVER', res.isError ? 'error' : '200 OK');
+  // Most BPI MCP tools map 1:1 to one upstream Open Banking API call; a few
+  // (e.g. bpi_begin_authorization) only build/return data and hit no API.
+  if (apiHop) {
+    flow(ws, 'SERVER', 'API', name);
+    flow(ws, 'API', 'SERVER', res.isError ? 'error' : '200 OK');
+  }
   if (res.isError) {
     log(CHANNELS.MCP_CLIENT, { level: 'err', dir: '<-', text: `tools/call ${name} error`, data: payload, ms });
     flow(ws, 'SERVER', 'CLIENT', 'error');
@@ -146,7 +153,7 @@ function step(ws, key, state) { send(ws, { type: 'step', key, state }); }
 function markConnectedSteps(ws) { step(ws, 'connect', 'done'); step(ws, 'verify', 'done'); }
 
 function freshState() {
-  return { contents: [], sessionId: null, selectedAccount: null, transactionId: null, connected: false };
+  return { contents: [], partnerToken: null, sessionId: null, selectedAccount: null, transactionId: null, connected: false };
 }
 
 async function handleClientMessage(ws, msg) {
@@ -270,17 +277,35 @@ function runTool(ws, name, args) {
 
 async function connectBpi(ws) {
   if (ws.state.connected) { markConnectedSteps(ws); return { status: 'already_connected', scope: ws.state.scope }; }
-  const scope = 'transactionalAccountsForBillsPay fundTopUp';
   const state = crypto.randomBytes(12).toString('hex');
   step(ws, 'connect', 'active');
 
-  // Front-channel: the partner app opens BPI's hosted /authorize (login) page.
-  log(CHANNELS.MCP_CLIENT, { level: 'info', text: 'OAuth: opening BPI /authorize (front-channel browser)…' });
-  await bpiFront(ws, 'GET', `/bpi/api/oauth2/authorize?response_type=code&client_id=${process.env.BPI_CLIENT_ID || 'a3f7832f-0f15-46e2-9070-29e6e89f2c2e'}&scope=${encodeURIComponent(scope)}&redirect_uri=https://partner.example/callback&state=${state}`);
+  // Layer 1 — partner authentication: the partner app authenticates ITSELF to
+  // BPI's (BPI-owned) MCP server with its MCP-layer credentials. BPI resolves
+  // the tenant and its vaulted Open Banking secret server-side.
+  if (!ws.state.partnerToken) {
+    log(CHANNELS.MCP_CLIENT, { level: 'info', text: 'Authenticating partner app to BPI MCP server (OAuth2 client-credentials)…' });
+    const auth = await mcpCall(ws, 'bpi_partner_authenticate',
+      { clientId: PARTNER_MCP_CLIENT_ID, clientSecret: PARTNER_MCP_CLIENT_SECRET }, { apiHop: false });
+    ws.state.partnerToken = auth.partnerToken;
+    send(ws, { type: 'chat', role: 'system', text: `🔐 Partner authenticated to BPI MCP Server — tenant: ${auth.partner}. BPI selected this tenant's Open Banking credentials server-side.` });
+  }
+
+  // Layer 2 — customer 3-legged OAuth. The MCP server (for this tenant) owns the
+  // client_id + scopes and initiates it, returning the hosted BPI /authorize URL.
+  const authz = await mcpCall(ws, 'bpi_begin_authorization', { partnerToken: ws.state.partnerToken, state }, { apiHop: false });
+  const scope = authz.scope;
+
+  // Front-channel: the partner app opens that /authorize URL in a browser. The
+  // customer's credentials/OTP are entered on BPI's page — the MCP server never
+  // sees them.
+  log(CHANNELS.MCP_CLIENT, { level: 'info', text: 'OAuth: opening BPI /authorize URL from MCP server (front-channel browser)…' });
+  const u = new URL(authz.authorizeUrl);
+  await bpiFront(ws, 'GET', u.pathname + u.search);
 
   // Screen 1: BPI login.
   const creds = await askUI(ws, 'login', { partner: PARTNER, scope });
-  const login = await bpiFront(ws, 'POST', '/bpi/api/oauth2/login', { username: creds.username, password: creds.password, scope, state });
+  const login = await bpiFront(ws, 'POST', '/bpi/api/oauth2/login', { username: creds.username, password: creds.password, scope, state: authz.state });
   step(ws, 'connect', 'done');
 
   // Screen 2: login OTP.
@@ -289,8 +314,9 @@ async function connectBpi(ws) {
   const verified = await bpiFront(ws, 'POST', '/bpi/api/oauth2/login/otp', { loginTxnId: login.loginTxnId, otp: otp.otp });
   log(CHANNELS.MCP_CLIENT, { level: 'ok', text: 'OAuth: authorization code received at redirect_uri' });
 
-  // Back-channel: exchange the code for a token *through the MCP server*.
-  const tokenInfo = await mcpCall(ws, 'bpi_exchange_token', { code: verified.code });
+  // Back-channel: exchange the code for a token *through the MCP server*, which
+  // uses this tenant's vaulted client_secret.
+  const tokenInfo = await mcpCall(ws, 'bpi_exchange_token', { partnerToken: ws.state.partnerToken, code: verified.code });
   ws.state.sessionId = tokenInfo.sessionId;
   ws.state.scope = tokenInfo.scope;
   ws.state.connected = true;
@@ -393,6 +419,8 @@ function redactArgs(args) {
   const a = { ...args };
   if (a.code) a.code = String(a.code).slice(0, 10) + '…';
   if (a.otp) a.otp = '••••••';
+  if (a.clientSecret) a.clientSecret = '••••••••';
+  if (a.partnerToken) a.partnerToken = String(a.partnerToken).slice(0, 10) + '…';
   if (a.accountNumberToken) a.accountNumberToken = String(a.accountNumberToken).slice(0, 10) + '…';
   return a;
 }

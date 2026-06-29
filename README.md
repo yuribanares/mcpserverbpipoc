@@ -47,9 +47,11 @@ Browser (4 panels) ──WebSocket──┐
   └───────────────┬─────────────────────────────────────────────┘
                   │ stdio (stdout=JSON-RPC, stderr=logs)
   ┌───────────────▼─────────────────────────────┐
-  │ BPI MCP SERVER  (server/bpi-mcp-server.js)   │  real @modelcontextprotocol/sdk server
-  │   tools: bpi_exchange_token,                 │  keeps OAuth tokens server-side
-  │          bpi_list_transactional_accounts,    │
+  │ BPI MCP SERVER  (server/bpi-mcp-server.js)   │  BPI-owned, multi-tenant
+  │   tools: bpi_partner_authenticate,           │  partner registry = BPI's vault
+  │          bpi_begin_authorization,            │  (per-tenant Open Banking
+  │          bpi_exchange_token,                 │   client_id/secret never leave)
+  │          bpi_list_transactional_accounts,    │  keeps OAuth tokens server-side
   │          bpi_fundtopup_{initiate,send_otp,   │
   │                         process,status}      │
   └───────────────┬──────────────────────────────┘
@@ -62,13 +64,28 @@ Browser (4 panels) ──WebSocket──┐
   └──────────────────────────────────────────────┘
 ```
 
-* The **MCP Client** and **MCP Server** speak the real Model Context Protocol
-  (`@modelcontextprotocol/sdk`) over stdio. The server runs as a separate child
-  process — genuinely separate components, not a mock.
-* OAuth **front‑channel** steps (the login/OTP pages) are driven by the chat UI,
-  matching how 3‑Legged OAuth keeps credentials away from the partner app. The
-  **back‑channel** `code → token` exchange and all transactional calls go
-  *through MCP*.
+* **Product framing:** **BPI owns and operates the MCP Server** and offers it to
+  partners as a product; the **partner** brings its own LLM + **MCP Client**. The
+  client and server speak the real Model Context Protocol
+  (`@modelcontextprotocol/sdk`) over stdio, as genuinely separate processes.
+* **Two authentication layers:**
+  1. **Partner ↔ BPI MCP Server** — the partner app authenticates *itself* with
+     its **MCP‑layer credentials** (`bpi_partner_authenticate`, OAuth2
+     client‑credentials). BPI's multi‑tenant **partner registry** maps the
+     partner to that tenant's **BPI Open Banking `client_id`/`client_secret`**,
+     held in BPI's vault. The Open Banking `client_secret` **never leaves BPI**
+     and is never returned to the client — the partner only gets an opaque
+     `partnerToken`. (The demo registry has two tenants — DRAGONPAY & JUANPAY —
+     to make the tenant→secret mapping concrete.)
+  2. **Customer ↔ BPI (3‑legged OAuth)** — see below.
+* **3‑Legged OAuth, MCP‑aligned:** the **MCP Server initiates** authorization
+  (`bpi_begin_authorization` returns BPI's hosted `/authorize` URL — it owns the
+  `client_id`/scopes). The customer's **login + OTP happen directly between the
+  MCP Client (browser) and BPI's authorization server** — the MCP Server never
+  sees credentials, per the MCP authorization model. The secret‑protected
+  `code → token` exchange (which needs `client_secret`) and all transactional
+  calls then go **through MCP**, with the access token held server‑side so the
+  LLM never handles raw bearer tokens. Open the **⇄ Flow view** to see this.
 * The Open Banking API is a faithful **mock** of the contract responses — no
   real BPI systems are contacted.
 
