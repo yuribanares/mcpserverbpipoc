@@ -80,7 +80,7 @@
         <span>Live message flow — LLM ⇄ MCP Client ⇄ BPI MCP Server ⇄ BPI Open Banking API</span>
         <span class="flow-actions"><button id="flow-clear" class="tbtn">Clear</button><button id="flow-close" title="Close">✕</button></span>
       </div>
-      <p class="flow-note">ℹ️ The MCP Server <b>initiates</b> OAuth (returns the BPI <code>/authorize</code> URL) and performs the secret-protected <code>/token</code> exchange. The customer's BPI login &amp; OTP happen <b>directly between the MCP Client (browser) and BPI's authorization server</b> — by design, the MCP Server never sees credentials.</p>
+      <p class="flow-note">ℹ️ <b>BPI owns the MCP Server</b> and offers it as a product; the partner brings its own LLM + <b>MCP Client</b>. <b>Two auth layers:</b> (1) the partner app authenticates itself to BPI's MCP server (<code>bpi_partner_authenticate</code>) — BPI maps the tenant to its vaulted Open Banking <code>client_secret</code>, which never leaves BPI; (2) the customer's 3-legged OAuth — the MCP Server returns the <code>/authorize</code> URL and does the secret-protected <code>/token</code> exchange, while login &amp; OTP happen directly between the MCP Client and BPI, so the server never sees customer credentials.</p>
       <div class="flow-stage">
         <div id="flow-lifelines" class="flow-lifelines"></div>
         <div id="flow-arrows" class="flow-arrows"></div>

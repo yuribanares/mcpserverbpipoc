@@ -31,6 +31,10 @@ const WEB_PORT = Number(process.env.PORT || 3000);
 const BPI_PORT = Number(process.env.BPI_API_PORT || 4000);
 const BPI_API_URL = `http://localhost:${BPI_PORT}`;
 const PARTNER = process.env.PARTNER_NAME || 'DRAGONPAY CORP';
+// The partner app's MCP-layer credentials used to authenticate to BPI's MCP
+// server (NOT BPI Open Banking credentials — those live in BPI's vault).
+const PARTNER_MCP_CLIENT_ID = process.env.PARTNER_MCP_CLIENT_ID || 'mcp_dragonpay_7f3a91';
+const PARTNER_MCP_CLIENT_SECRET = process.env.PARTNER_MCP_CLIENT_SECRET || 'mcps_dragonpay_4b9c2e7f10a8d6';
 
 // ── LLM selection ──────────────────────────────────────────────────────────
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -149,7 +153,7 @@ function step(ws, key, state) { send(ws, { type: 'step', key, state }); }
 function markConnectedSteps(ws) { step(ws, 'connect', 'done'); step(ws, 'verify', 'done'); }
 
 function freshState() {
-  return { contents: [], sessionId: null, selectedAccount: null, transactionId: null, connected: false };
+  return { contents: [], partnerToken: null, sessionId: null, selectedAccount: null, transactionId: null, connected: false };
 }
 
 async function handleClientMessage(ws, msg) {
@@ -276,9 +280,20 @@ async function connectBpi(ws) {
   const state = crypto.randomBytes(12).toString('hex');
   step(ws, 'connect', 'active');
 
-  // The MCP server owns the client_id + scopes and initiates the OAuth handshake:
-  // it returns the hosted BPI /authorize URL for the partner app to open.
-  const authz = await mcpCall(ws, 'bpi_begin_authorization', { state }, { apiHop: false });
+  // Layer 1 — partner authentication: the partner app authenticates ITSELF to
+  // BPI's (BPI-owned) MCP server with its MCP-layer credentials. BPI resolves
+  // the tenant and its vaulted Open Banking secret server-side.
+  if (!ws.state.partnerToken) {
+    log(CHANNELS.MCP_CLIENT, { level: 'info', text: 'Authenticating partner app to BPI MCP server (OAuth2 client-credentials)…' });
+    const auth = await mcpCall(ws, 'bpi_partner_authenticate',
+      { clientId: PARTNER_MCP_CLIENT_ID, clientSecret: PARTNER_MCP_CLIENT_SECRET }, { apiHop: false });
+    ws.state.partnerToken = auth.partnerToken;
+    send(ws, { type: 'chat', role: 'system', text: `🔐 Partner authenticated to BPI MCP Server — tenant: ${auth.partner}. BPI selected this tenant's Open Banking credentials server-side.` });
+  }
+
+  // Layer 2 — customer 3-legged OAuth. The MCP server (for this tenant) owns the
+  // client_id + scopes and initiates it, returning the hosted BPI /authorize URL.
+  const authz = await mcpCall(ws, 'bpi_begin_authorization', { partnerToken: ws.state.partnerToken, state }, { apiHop: false });
   const scope = authz.scope;
 
   // Front-channel: the partner app opens that /authorize URL in a browser. The
@@ -299,8 +314,9 @@ async function connectBpi(ws) {
   const verified = await bpiFront(ws, 'POST', '/bpi/api/oauth2/login/otp', { loginTxnId: login.loginTxnId, otp: otp.otp });
   log(CHANNELS.MCP_CLIENT, { level: 'ok', text: 'OAuth: authorization code received at redirect_uri' });
 
-  // Back-channel: exchange the code for a token *through the MCP server*.
-  const tokenInfo = await mcpCall(ws, 'bpi_exchange_token', { code: verified.code });
+  // Back-channel: exchange the code for a token *through the MCP server*, which
+  // uses this tenant's vaulted client_secret.
+  const tokenInfo = await mcpCall(ws, 'bpi_exchange_token', { partnerToken: ws.state.partnerToken, code: verified.code });
   ws.state.sessionId = tokenInfo.sessionId;
   ws.state.scope = tokenInfo.scope;
   ws.state.connected = true;
@@ -403,6 +419,8 @@ function redactArgs(args) {
   const a = { ...args };
   if (a.code) a.code = String(a.code).slice(0, 10) + '…';
   if (a.otp) a.otp = '••••••';
+  if (a.clientSecret) a.clientSecret = '••••••••';
+  if (a.partnerToken) a.partnerToken = String(a.partnerToken).slice(0, 10) + '…';
   if (a.accountNumberToken) a.accountNumberToken = String(a.accountNumberToken).slice(0, 10) + '…';
   return a;
 }

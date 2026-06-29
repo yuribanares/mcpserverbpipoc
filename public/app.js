@@ -347,8 +347,8 @@ document.querySelectorAll('.tbtn[data-term]').forEach((btn) => {
 // ── Live sequence diagram (#10) ──────────────────────────
 const ACTORS = ['YOU', 'LLM', 'CLIENT', 'SERVER', 'API'];
 const ACTOR_META = {
-  YOU: ['You', 'customer'], LLM: ['LLM', 'Gemini'], CLIENT: ['MCP Client', 'partner app'],
-  SERVER: ['BPI MCP Server', 'tools'], API: ['BPI API', 'Open Banking'],
+  YOU: ['You', 'customer'], LLM: ['LLM', 'Gemini'], CLIENT: ['MCP Client', 'partner-owned'],
+  SERVER: ['BPI MCP Server', 'BPI-owned'], API: ['BPI API', 'Open Banking'],
 };
 let flowBuffer = [];
 function initLifelines() {
