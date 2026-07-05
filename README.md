@@ -151,7 +151,7 @@ top-up while every component narrates itself in its own terminal.
 ```
 server/
   orchestrator.js     # web server + MCP client + LLM agent loop + WS streaming
-  bpi-mcp-server.js   # the BPI MCP Server (stdio child process)
+  bpi-mcp-server.js   # the BPI MCP Server (stdio child process) — see walkthrough below
   bpi-api.js          # mock BPI Open Banking API (Express, :4000)
   gemini.js           # Gemini LLM wrapper (@google/genai)
   mock-llm.js         # offline fallback planner (no API key needed)
@@ -160,6 +160,13 @@ server/
 public/
   index.html styles.css app.js   # the four-panel UI + simulated BPI screens
 ```
+
+## Understanding the BPI MCP Server
+
+`server/bpi-mcp-server.js` is heavily commented for a walkthrough, and there is a
+non-technical presenter's guide: **[docs/BPI-MCP-SERVER-EXPLAINED.md](docs/BPI-MCP-SERVER-EXPLAINED.md)**
+— elevator pitch, the two security boundaries, the request lifecycle, a
+section-by-section tour, and likely Q&A.
 
 ## Notes & disclaimers
 
