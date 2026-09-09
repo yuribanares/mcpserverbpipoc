@@ -133,6 +133,45 @@ top-up while every component narrates itself in its own terminal.
 
 `.env` is git‑ignored — your key is never committed.
 
+### Setting the key in GitHub Codespaces
+
+You have two options. **Option A is the quickest; Option B is the most secure**
+(the key survives Codespace rebuilds and is never typed into a file).
+
+**Option A — a local `.env` file (quick)**
+
+1. Open your Codespace (GitHub repo → green **`< > Code`** button → **Codespaces**
+   tab → open/create one).
+2. In the Codespace **Terminal** (menu **Terminal → New Terminal**), run:
+   ```bash
+   cp .env.example .env
+   ```
+3. In the **Explorer** on the left, click the new **`.env`** file to open it.
+4. Find the line `GEMINI_API_KEY=` and paste your key after the `=`:
+   ```ini
+   GEMINI_API_KEY=AIzaSy...your_key...
+   ```
+5. Save (**Ctrl/Cmd + S**), then in the terminal run `npm install` (first time
+   only) and `npm start`.
+6. The top bar shows `LLM: Gemini …` once the key is picked up. This `.env` stays
+   in your Codespace and is never committed.
+
+**Option B — a Codespaces secret (recommended)**
+
+1. On GitHub, go to your profile **Settings** → **Codespaces** → **Codespaces
+   secrets** → **New secret**.
+   (Direct link: **https://github.com/settings/codespaces**)
+2. **Name:** `GEMINI_API_KEY`  •  **Value:** your key.
+3. Under **Repository access**, tick **`yuribanares/mcpserverbpipoc`**, then
+   **Add secret**.
+4. **Rebuild/restart** the Codespace (Command Palette → *Codespaces: Rebuild
+   Container*, or stop & reopen) so the secret is injected.
+5. Run `npm start` — no `.env` needed; the app reads `GEMINI_API_KEY` straight
+   from the environment.
+
+> Either way you do **not** commit the key. Only the empty template
+> (`.env.example`) lives in the repo.
+
 ### Troubleshooting Gemini
 
 * **`429 RESOURCE_EXHAUSTED … limit: 0`** — your API key's Google project has **no
