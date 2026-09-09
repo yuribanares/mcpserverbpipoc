@@ -38,7 +38,7 @@ const PARTNER_MCP_CLIENT_SECRET = process.env.PARTNER_MCP_CLIENT_SECRET || 'mcps
 
 // ── LLM selection ──────────────────────────────────────────────────────────
 const GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 // The offline scripted planner is always available as a fallback so a quota or
 // network problem with Gemini never dead-ends a live demo.
 const mockLlm = createMockLLM();
@@ -406,7 +406,7 @@ function llmErrorHint(err) {
   if (/API key|API_KEY_INVALID|401|invalid.*key|PERMISSION_DENIED/i.test(m))
     return `⚠️ Gemini rejected the request — check GEMINI_API_KEY in your .env. (${m})`;
   if (/404|not found|NOT_FOUND|is not found|unsupported/i.test(m))
-    return `⚠️ Model "${GEMINI_MODEL}" was not found for your key. Try GEMINI_MODEL=gemini-2.0-flash (or gemini-1.5-flash) in .env. (${m})`;
+    return `⚠️ Model "${GEMINI_MODEL}" was not found for your key. Try GEMINI_MODEL=gemini-3.6-flash (or gemini-2.5-flash) in .env. (${m})`;
   if (/429|quota|RESOURCE_EXHAUSTED|rate/i.test(m))
     return `⚠️ Gemini quota/rate limit hit. Wait a moment or check your plan. (${m})`;
   if (/ENOTFOUND|ECONNREFUSED|fetch failed|network|ETIMEDOUT/i.test(m))

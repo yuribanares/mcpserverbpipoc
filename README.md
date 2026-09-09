@@ -122,9 +122,9 @@ top-up while every component narrates itself in its own terminal.
    ```ini
    GEMINI_API_KEY=your_key_here
    # optional:
-   GEMINI_MODEL=gemini-2.0-flash
+   GEMINI_MODEL=gemini-3.6-flash
    ```
-4. Restart `npm start`. The top bar will show `LLM: Gemini (gemini-2.0-flash)`.
+4. Restart `npm start`. The top bar will show `LLM: Gemini (gemini-3.6-flash)`.
 
 > **No key?** The PoC still runs end‑to‑end using a built‑in **offline scripted
 > planner** so you can demo the full journey without any external calls. The top
@@ -174,11 +174,14 @@ You have two options. **Option A is the quickest; Option B is the most secure**
 
 ### Troubleshooting Gemini
 
+* **`404 … model … is no longer available`** — Google retired that model name.
+  Set a current one in `.env`, e.g. `GEMINI_MODEL=gemini-3.6-flash` (or
+  `gemini-2.5-flash`), then restart `npm start`.
 * **`429 RESOURCE_EXHAUSTED … limit: 0`** — your API key's Google project has **no
   free‑tier quota** for the chosen model. Either **enable billing** on the
   project (AI Studio → *Get API key* → the linked Cloud project), or set a
-  different `GEMINI_MODEL` in `.env` (try `gemini-2.5-flash` or
-  `gemini-1.5-flash`). The error message in chat tells you which case you hit.
+  different `GEMINI_MODEL` in `.env` (try `gemini-3.6-flash` or
+  `gemini-2.5-flash`). The error message in chat tells you which case you hit.
 * **`API key not valid`** — double‑check `GEMINI_API_KEY` in `.env`.
 * **Automatic fallback** — on *any* Gemini error (quota, bad key, network) the
   app shows a clear note and **continues the journey using the offline scripted
