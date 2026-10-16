@@ -10,9 +10,24 @@
 // same way the real contract describes.
 import express from 'express';
 import crypto from 'node:crypto';
-import { log, CHANNELS } from './logbus.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { log, onLog, CHANNELS } from './logbus.js';
 
 const C = CHANNELS.BPI_API;
+
+// Demo-only (off by default): when this mock bank runs remotely (e.g. on Amazon
+// Lightsail), the demo UI can't see its terminal lines. With
+// DEMO_ECHO_LOGS=true each JSON response carries a copy of the lines logged
+// while handling that request (`_demoLogs`), which the demo UI / MCP server
+// replay into the "BPI API" panel and then strip. The local PoC never sets it.
+const ECHO_LOGS = process.env.DEMO_ECHO_LOGS === 'true';
+const requestLogs = new AsyncLocalStorage();
+if (ECHO_LOGS) {
+  onLog((rec) => {
+    const bucket = requestLogs.getStore();
+    if (bucket && rec.channel === C) bucket.push({ level: rec.level, dir: rec.dir, text: rec.text, data: rec.data, ms: rec.ms });
+  });
+}
 
 // --- Demo data -------------------------------------------------------------
 // Three transactional accounts, mirroring the sample account-selection screen.
@@ -56,21 +71,30 @@ export function startBpiApi(port = 4000) {
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
+  // Health check for hosting platforms (e.g. Lightsail). Registered before the
+  // logger below so frequent health pings don't flood the terminal.
+  app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'bpi-mock-bank' }));
+
   // Log each request as it arrives and capture the JSON response body.
   // Simulated network/processing latency so the request and its response land
   // a beat apart in the terminal — makes the cascade watchable during a demo.
   const LATENCY = Number(process.env.BPI_API_LATENCY_MS ?? 280);
-  app.use(async (req, res, next) => {
-    const tag = `${req.method} ${req.path}`;
-    const started = Date.now();
-    log(C, { level: 'req', dir: '<-', text: tag, data: redact({ ...req.query, ...req.body }) });
-    const orig = res.json.bind(res);
-    res.json = (body) => {
-      log(C, { level: res.statusCode >= 400 ? 'err' : 'res', dir: '->', text: `${res.statusCode} ${tag}`, data: redact(body), ms: Date.now() - started });
-      return orig(body);
+  app.use((req, res, next) => {
+    const handle = async () => {
+      const tag = `${req.method} ${req.path}`;
+      const started = Date.now();
+      log(C, { level: 'req', dir: '<-', text: tag, data: redact({ ...req.query, ...req.body }) });
+      const orig = res.json.bind(res);
+      res.json = (body) => {
+        log(C, { level: res.statusCode >= 400 ? 'err' : 'res', dir: '->', text: `${res.statusCode} ${tag}`, data: redact(body), ms: Date.now() - started });
+        const bucket = requestLogs.getStore();
+        if (bucket && body && typeof body === 'object' && !Array.isArray(body)) body = { ...body, _demoLogs: bucket.slice() };
+        return orig(body);
+      };
+      if (LATENCY > 0) await new Promise((r) => setTimeout(r, LATENCY));
+      next();
     };
-    if (LATENCY > 0) await new Promise((r) => setTimeout(r, LATENCY));
-    next();
+    return ECHO_LOGS ? requestLogs.run([], handle) : handle();
   });
 
   // === 3-Legged OAuth ======================================================

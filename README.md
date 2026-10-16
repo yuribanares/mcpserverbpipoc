@@ -195,13 +195,31 @@ server/
   orchestrator.js     # web server + MCP client + LLM agent loop + WS streaming
   bpi-mcp-server.js   # the BPI MCP Server (stdio child process) — see walkthrough below
   bpi-api.js          # mock BPI Open Banking API (Express, :4000)
+  remote-mcp.js       # MCP_MODE=aws only: HTTPS + Cognito connection to AgentCore
   gemini.js           # Gemini LLM wrapper (@google/genai)
   mock-llm.js         # offline fallback planner (no API key needed)
   agent-tools.js      # LLM-facing tool definitions + system prompt
   logbus.js           # in-process log bus streamed to the terminals
 public/
   index.html styles.css app.js   # the four-panel UI + simulated BPI screens
+deploy/aws-agentcore/            # deploy the MCP server to AWS (see below)
 ```
+
+## Deploy to AWS (Amazon Bedrock AgentCore Runtime)
+
+The BPI MCP Server can also run on **Amazon Bedrock AgentCore Runtime**
+(Singapore, `ap-southeast-1`), with the mock bank on **Amazon Lightsail**, using
+the **same code** and the **same demo values**. The demo UI connects to it with
+one setting in `.env`:
+
+```ini
+MCP_MODE=local   # default — the local proof of concept, exactly as before
+MCP_MODE=aws     # the AWS deployment (after you deploy it)
+```
+
+Step-by-step, beginner-friendly guide: **[deploy/aws-agentcore/README.md](deploy/aws-agentcore/README.md)**.
+It covers numbered scripts, demo and production profiles, troubleshooting,
+costs, and deleting everything.
 
 ## Understanding the BPI MCP Server
 

@@ -2,3 +2,11 @@ node_modules/
 .env
 *.log
 .DS_Store
+
+# AWS deployment (deploy/aws-agentcore): generated state, build output and
+# files that may hold secrets are never committed.
+deploy/aws-agentcore/.state/
+deploy/aws-agentcore/.build/
+deploy/aws-agentcore/config/production.env
+deploy/aws-agentcore/config/partner-registry.json
+.env.backup-*

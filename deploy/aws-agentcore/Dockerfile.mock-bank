@@ -1,0 +1,20 @@
+# Dockerfile.mock-bank — the DEMO mock bank, for Amazon Lightsail.
+# Built by scripts/01-deploy-mock-bank.sh from the repository root:
+#   docker build --platform linux/amd64 -f deploy/aws-agentcore/Dockerfile.mock-bank -t bpi-mock-bank .
+# It runs server/bpi-api.js unchanged (same accounts, OTP rules and responses
+# as the local PoC). Not used in production — there you call the real BPI API.
+FROM node:22-slim
+WORKDIR /app
+ENV NODE_ENV=production PORT=8080
+
+# Libraries first (cached between builds).
+COPY deploy/aws-agentcore/package.json deploy/aws-agentcore/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund --loglevel=error
+
+# Same folder layout as the repository, so the imports work unchanged.
+COPY server/bpi-api.js server/logbus.js ./server/
+COPY deploy/aws-agentcore/src/mock-bank.js ./deploy/aws-agentcore/src/
+
+EXPOSE 8080
+USER node
+CMD ["node", "deploy/aws-agentcore/src/mock-bank.js"]

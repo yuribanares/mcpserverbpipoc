@@ -30,6 +30,8 @@ function handle(msg) {
   switch (msg.type) {
     case 'hello':
       $('#llm-badge').textContent = `LLM: ${msg.llm}`;
+      $('#mode-badge').textContent = `MCP: ${msg.mode || 'Local'}`;
+      $('#mode-badge').classList.toggle('badge-aws', msg.mcpMode === 'aws');
       if (!msg.usingGemini) systemBubble('Running with the offline scripted planner — add a GEMINI_API_KEY in .env to use the real Gemini model.');
       break;
     case 'log': renderLog(msg.record); break;
