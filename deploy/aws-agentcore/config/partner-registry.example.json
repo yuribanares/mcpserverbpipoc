@@ -1,0 +1,20 @@
+{
+  "mcp_dragonpay_7f3a91": {
+    "partnerId": "dragonpay",
+    "displayName": "DRAGONPAY CORP",
+    "mcpClientSecret": "REPLACE-with-a-long-random-secret-or-remove-in-jwt-mode",
+    "bpiClientId": "REPLACE-with-the-client_id-BPI-issued-to-this-partner",
+    "bpiClientSecret": "REPLACE-with-the-client_secret-BPI-issued-to-this-partner",
+    "scopes": "transactionalAccountsForBillsPay fundTopUp",
+    "jwtClientIds": ["REPLACE-with-this-partner's-Cognito-app-client-id"]
+  },
+  "mcp_juanpay_2c5d80": {
+    "partnerId": "juanpay",
+    "displayName": "JUANPAY INC",
+    "mcpClientSecret": "REPLACE-with-a-long-random-secret-or-remove-in-jwt-mode",
+    "bpiClientId": "REPLACE-with-the-client_id-BPI-issued-to-this-partner",
+    "bpiClientSecret": "REPLACE-with-the-client_secret-BPI-issued-to-this-partner",
+    "scopes": "transactionalAccountsForBillsPay fundTopUp",
+    "jwtClientIds": ["REPLACE-with-this-partner's-Cognito-app-client-id"]
+  }
+}

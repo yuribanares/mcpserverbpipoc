@@ -1,0 +1,23 @@
+{
+  "name": "bpi-mcp-server-aws-agentcore",
+  "version": "1.0.0",
+  "description": "Packages the BPI MCP Server (server/bpi-mcp-server.js) for Amazon Bedrock AgentCore Runtime, plus a standalone mock bank for Amazon Lightsail.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/http-server.js",
+    "mock-bank": "node src/mock-bank.js",
+    "test-journey": "node src/test-journey.js",
+    "unit-tests": "node src/unit-tests.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1152.0",
+    "@aws-sdk/client-secrets-manager": "^3.1152.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "aws-jwt-verify": "^5.2.1",
+    "express": "^4.22.3"
+  }
+}

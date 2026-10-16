@@ -4,6 +4,9 @@
 //   • Serve the four-panel web UI and a WebSocket for live updates.
 //   • Boot the mock BPI Open Banking API (in-process, :4000).
 //   • Act as the MCP CLIENT: spawn the BPI MCP Server over stdio and call its tools.
+//     (Or, with MCP_MODE=aws, connect over HTTPS to the copy running on Amazon
+//     Bedrock AgentCore Runtime and use the mock bank on Amazon Lightsail —
+//     see deploy/aws-agentcore/README.md. MCP_MODE=local is the default.)
 //   • Run the agentic loop (Gemini, or an offline scripted planner) for the
 //     A.I Chat Center, including human-in-the-loop BPI screens (login, OTP,
 //     account selection, transaction OTP).
@@ -29,8 +32,32 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const WEB_PORT = Number(process.env.PORT || 3000);
 const BPI_PORT = Number(process.env.BPI_API_PORT || 4000);
-const BPI_API_URL = `http://localhost:${BPI_PORT}`;
 const PARTNER = process.env.PARTNER_NAME || 'DRAGONPAY CORP';
+
+// ── Where the BPI MCP Server and the bank run ───────────────────────────────
+//   local (default) — exactly the PoC: MCP server as a local child process,
+//                     mock bank in-process on localhost:4000.
+//   aws             — MCP server on AWS AgentCore Runtime (over HTTPS, with a
+//                     Cognito login token) + the mock bank on AWS Lightsail.
+const MCP_MODE = (process.env.MCP_MODE || 'local').trim().toLowerCase();
+const AWS = MCP_MODE === 'aws' ? {
+  region: process.env.AWS_REGION || 'ap-southeast-1',
+  runtimeArn: (process.env.AWS_AGENTCORE_RUNTIME_ARN || '').trim(),
+  mcpUrl: (process.env.AWS_MCP_URL || '').trim(), // optional override (e.g. local testing)
+  bankUrl: (process.env.AWS_BANK_URL || '').trim().replace(/\/+$/, ''),
+  cognito: {
+    tokenUrl: process.env.AWS_COGNITO_TOKEN_URL,
+    clientId: process.env.AWS_COGNITO_CLIENT_ID,
+    clientSecret: process.env.AWS_COGNITO_CLIENT_SECRET,
+    scope: process.env.AWS_COGNITO_SCOPE,
+  },
+} : null;
+const BPI_API_URL = AWS ? AWS.bankUrl : `http://localhost:${BPI_PORT}`;
+// Short label for the top-bar badge, so a presenter always sees what is live.
+const hostOf = (u) => { try { return new URL(u).host; } catch { return u; } };
+const MODE_LABEL = AWS
+  ? `${AWS.mcpUrl ? `Remote test server (${hostOf(AWS.mcpUrl)})` : `AWS AgentCore (${AWS.region})`} · Bank: ${/amazonlightsail\.com/.test(AWS.bankUrl) ? 'Lightsail mock' : hostOf(AWS.bankUrl)}`
+  : 'Local';
 // The partner app's MCP-layer credentials used to authenticate to BPI's MCP
 // server (NOT BPI Open Banking credentials — those live in BPI's vault).
 const PARTNER_MCP_CLIENT_ID = process.env.PARTNER_MCP_CLIENT_ID || 'mcp_dragonpay_7f3a91';
@@ -77,6 +104,73 @@ async function startMcpClient() {
   log(CHANNELS.MCP_CLIENT, { level: 'info', dir: '->', text: 'tools/list', data: tools.map((t) => t.name) });
 }
 
+// ── MCP_MODE=aws: connect to the BPI MCP Server on AgentCore over HTTPS ──────
+let remote; // helpers from remote-mcp.js, loaded only in aws mode
+
+// Friendly startup checks so a presenter never meets a cryptic error.
+async function checkAwsSettings() {
+  const missing = [];
+  if (!AWS.runtimeArn && !AWS.mcpUrl) missing.push('AWS_AGENTCORE_RUNTIME_ARN');
+  if (!AWS.bankUrl) missing.push('AWS_BANK_URL');
+  if (!AWS.mcpUrl) {
+    if (!AWS.cognito.tokenUrl) missing.push('AWS_COGNITO_TOKEN_URL');
+    if (!AWS.cognito.clientId) missing.push('AWS_COGNITO_CLIENT_ID');
+    if (!AWS.cognito.clientSecret) missing.push('AWS_COGNITO_CLIENT_SECRET');
+  }
+  if (missing.length) {
+    fatal(`MCP_MODE=aws but these settings are missing in .env: ${missing.join(', ')}.\n` +
+      '  Run deploy/aws-agentcore/scripts/07-write-demo-ui-settings.sh to fill them in,\n' +
+      '  or set MCP_MODE=local to use the local PoC. Guide: deploy/aws-agentcore/docs/4-connect-demo-ui.md');
+  }
+  try {
+    const res = await fetch(`${AWS.bankUrl}/health`, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (err) {
+    fatal(`Can't reach the bank at AWS_BANK_URL=${AWS.bankUrl} (${err.message}).\n` +
+      '  Check the Lightsail container service is "Running" (deploy/aws-agentcore/docs/2-deploy-mock-bank-lightsail.md).');
+  }
+}
+
+async function startRemoteMcpClient() {
+  remote = remote || await import('./remote-mcp.js');
+  const url = AWS.mcpUrl || remote.agentCoreInvokeUrl(AWS.region, AWS.runtimeArn);
+  const getToken = remote.createTokenProvider(AWS.cognito);
+  log(CHANNELS.MCP_CLIENT, { level: 'info', text: `Connecting to the BPI MCP Server on ${AWS.mcpUrl ? AWS.mcpUrl : `AWS AgentCore Runtime (${AWS.region})`} over HTTPS…` });
+  if (await getToken()) log(CHANNELS.MCP_CLIENT, { level: 'ok', text: 'Partner app logged in to Amazon Cognito (front-door token for AgentCore).' });
+  mcp = await remote.connectRemoteMcp({ url, getToken });
+  log(CHANNELS.MCP_CLIENT, { level: 'ok', text: 'MCP session initialized (protocol handshake complete)' });
+  log(CHANNELS.MCP_SERVER, { level: 'info', text: 'BPI MCP Server is running on AWS AgentCore Runtime. Its activity is relayed here in demo mode (full logs: Amazon CloudWatch).' });
+  const { tools } = await mcp.listTools();
+  log(CHANNELS.MCP_CLIENT, { level: 'info', dir: '->', text: 'tools/list', data: tools.map((t) => t.name) });
+}
+
+// In demo mode the AWS server sends back its own terminal lines (and the
+// Lightsail bank's) with each result; show them in the matching panels.
+function relayServerLogs(lines) {
+  for (const l of lines || []) {
+    const channel = l.channel === 'bpi-api' ? CHANNELS.BPI_API : CHANNELS.MCP_SERVER;
+    log(channel, { level: l.level, dir: l.dir, text: l.text, data: l.data, ms: l.ms });
+  }
+}
+
+// AgentCore stops a session's server copy after a period of inactivity. When
+// that happens the server no longer remembers the partner/customer login, so
+// reconnect and ask the customer to start again.
+const SESSION_LOST = /Partner not authenticated|Invalid or expired sessionId|session not found|HTTP 404|ECONNRESET|socket hang up|fetch failed/i;
+async function recoverRemoteSession(ws, reason) {
+  log(CHANNELS.MCP_CLIENT, { level: 'err', text: `AWS session lost (${reason}). Reconnecting…` });
+  ws.state = freshState();
+  try { await startRemoteMcpClient(); } catch (err) {
+    throw new Error(`Can't reach the BPI MCP Server on AWS right now (${err.message}). Please try again in a moment.`);
+  }
+  return new Error('Your AWS session timed out after being idle, so BPI needs you to log in again. Please click "⟲ New chat" and ask again.');
+}
+
+function fatal(message) {
+  console.error(`\n  ✖ ${message}\n`);
+  process.exit(1);
+}
+
 // Demo pacing: a short beat so each MCP → server → API hop visibly cascades
 // across the terminals instead of firing all at once. Set PACE_MS=0 to disable.
 const PACE_MS = Number(process.env.PACE_MS ?? 350);
@@ -90,9 +184,19 @@ async function mcpCall(ws, name, args, { apiHop = true } = {}) {
   const t0 = Date.now();
   log(CHANNELS.MCP_CLIENT, { level: 'req', dir: '->', text: `tools/call ${name}`, data: redactArgs(args) });
   flow(ws, 'CLIENT', 'SERVER', `tools/call ${name}`);
-  const res = await mcp.callTool({ name, arguments: args });
+  let res;
+  try {
+    res = await mcp.callTool({ name, arguments: args });
+  } catch (err) {
+    if (AWS && SESSION_LOST.test(err.message)) throw await recoverRemoteSession(ws, err.message);
+    throw err;
+  }
   const payload = JSON.parse(res.content?.[0]?.text || '{}');
   const ms = Date.now() - t0;
+  if (AWS) {
+    relayServerLogs(remote.serverLogsOf(res));
+    if (res.isError && SESSION_LOST.test(payload.error || '')) throw await recoverRemoteSession(ws, payload.error);
+  }
   // Most BPI MCP tools map 1:1 to one upstream Open Banking API call; a few
   // (e.g. bpi_begin_authorization) only build/return data and hit no API.
   if (apiHop) {
@@ -112,7 +216,7 @@ async function mcpCall(ws, name, args, { apiHop = true } = {}) {
 // ── Express + WebSocket ─────────────────────────────────────────────────────
 const app = express();
 app.use(express.static(path.join(ROOT, 'public')));
-app.get('/api/health', (_req, res) => res.json({ ok: true, llm: llm.name }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, llm: llm.name, mcpMode: MCP_MODE, mode: MODE_LABEL }));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
@@ -132,7 +236,7 @@ wss.on('connection', (ws) => {
   ws.state = freshState();
   ws.pending = new Map(); // promptId -> resolve fn for human-in-the-loop screens
   ws.fellBack = false; // switched from Gemini to the offline planner this session?
-  send(ws, { type: 'hello', partner: PARTNER, llm: llm.name, usingGemini: !!GEMINI_KEY });
+  send(ws, { type: 'hello', partner: PARTNER, llm: llm.name, usingGemini: !!GEMINI_KEY, mcpMode: MCP_MODE, mode: MODE_LABEL });
 
   ws.on('message', (raw) => {
     let msg; try { msg = JSON.parse(raw); } catch { return; }
@@ -394,6 +498,8 @@ async function bpiFront(ws, method, pathName, body) {
   if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   const res = await fetch(`${BPI_API_URL}${pathName}`, opts);
   const data = await res.json().catch(() => ({}));
+  // A remote (Lightsail) demo bank sends its terminal lines along; show + strip them.
+  if (Array.isArray(data._demoLogs)) { relayServerLogs(data._demoLogs.map((l) => ({ ...l, channel: 'bpi-api' }))); delete data._demoLogs; }
   flow(ws, 'API', 'CLIENT', res.ok ? '200 OK' : `error ${res.status}`);
   if (!res.ok) throw new Error(data.error || `BPI ${pathName} failed (${res.status})`);
   return data;
@@ -428,17 +534,30 @@ function redactArgs(args) {
 // ── boot ────────────────────────────────────────────────────────────────────
 async function main() {
   log(CHANNELS.SYSTEM, { level: 'info', text: 'Starting BPI MCP PoC…' });
-  await startBpiApi(BPI_PORT);
-  await startMcpClient();
+  if (MCP_MODE === 'local') {
+    await startBpiApi(BPI_PORT);
+    await startMcpClient();
+  } else if (MCP_MODE === 'aws') {
+    await checkAwsSettings();
+    try { await startRemoteMcpClient(); } catch (err) {
+      fatal(`Couldn't connect to the BPI MCP Server on AWS: ${err.message}\n` +
+        (/401|403/.test(err.message) ? '  AgentCore rejected the partner token — check the AWS_COGNITO_* settings and the runtime\'s allowed clients (scripts/05).\n' : '') +
+        '  Troubleshooting: deploy/aws-agentcore/docs/6-troubleshooting.md');
+    }
+  } else {
+    fatal(`MCP_MODE must be "local" or "aws" (got "${MCP_MODE}").`);
+  }
   server.listen(WEB_PORT, () => {
-    const banner = `\n  ┌────────────────────────────────────────────────────────┐\n` +
-      `  │  BPI × MCP proof of concept                            │\n` +
-      `  │  UI:        http://localhost:${WEB_PORT}                       │\n` +
-      `  │  BPI API:   ${BPI_API_URL}                  │\n` +
-      `  │  LLM:       ${(GEMINI_KEY ? `Gemini (${GEMINI_MODEL})` : 'offline scripted planner').padEnd(40)}│\n` +
-      `  └────────────────────────────────────────────────────────┘\n`;
+    const row = (label, value) => `  │  ${label.padEnd(10)} ${String(value).padEnd(57)}│\n`;
+    const banner = `\n  ┌${'─'.repeat(71)}┐\n` +
+      row('BPI × MCP', 'proof of concept') +
+      row('UI:', `http://localhost:${WEB_PORT}`) +
+      row('MCP mode:', MODE_LABEL) +
+      row('BPI API:', BPI_API_URL) +
+      row('LLM:', GEMINI_KEY ? `Gemini (${GEMINI_MODEL})` : 'offline scripted planner') +
+      `  └${'─'.repeat(71)}┘\n`;
     console.log(banner);
-    log(CHANNELS.SYSTEM, { level: 'ok', text: `Web UI ready at http://localhost:${WEB_PORT} — LLM: ${llm.name}` });
+    log(CHANNELS.SYSTEM, { level: 'ok', text: `Web UI ready at http://localhost:${WEB_PORT} — LLM: ${llm.name} — MCP: ${MODE_LABEL}` });
   });
 }
 

@@ -1,0 +1,12 @@
+# Keep container builds small and never copy secrets into an image.
+.git
+node_modules
+**/node_modules
+.env
+.env.*
+docs
+public
+deploy/aws-agentcore/.state
+deploy/aws-agentcore/.build
+deploy/aws-agentcore/config/production.env
+deploy/aws-agentcore/config/partner-registry.json

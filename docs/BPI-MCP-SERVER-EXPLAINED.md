@@ -134,6 +134,15 @@ below matches a `// ───` banner in the code.
 
 12. **Bootstrap** — connect over stdio and start listening.
 
+> **Where it runs.** All of the above lives inside one function,
+> `createBpiMcpServer()`. Run the file directly and it talks over **stdio**: this
+> is the local proof of concept. Deployed to **Amazon Bedrock AgentCore
+> Runtime**, a tiny "HTTP plug" (`deploy/aws-agentcore/src/http-server.js`)
+> serves the **very same function** over HTTPS. Same tools, same security
+> boundaries, no copy of the logic. Talking point: *"what you see in the demo
+> is literally what runs in the cloud."* See
+> [`deploy/aws-agentcore/README.md`](../deploy/aws-agentcore/README.md).
+
 ---
 
 ## 7. The 8 tools at a glance

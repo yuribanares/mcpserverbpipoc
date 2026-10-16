@@ -18,6 +18,13 @@
 //   • stderr  = our plain-English activity log — shown in the demo UI's
 //               "BPI MCP Server Terminal" panel (see slog() below).
 //
+// ONE FILE, TWO WAYS TO RUN
+//   • Run directly (`node server/bpi-mcp-server.js`) — what the local PoC does.
+//     It talks over stdio, exactly as described above.
+//   • Imported by the AWS version (deploy/aws-agentcore/) — which calls
+//     createBpiMcpServer() and serves the very same tools over HTTPS on Amazon
+//     Bedrock AgentCore Runtime. The tool logic below is shared, not copied.
+//
 // THE 8 TOOLS THIS SERVER OFFERS  (and the BPI Open Banking endpoint each maps to)
 //   Onboarding / auth:
 //     1. bpi_partner_authenticate        → (no API call) authenticates the PARTNER
@@ -49,10 +56,12 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import crypto from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 // Where BPI's Open Banking API lives. In this PoC it is a local mock; in
-// production it would be BPI's real API gateway.
+// production it would be BPI's real API gateway. (The AWS version passes its
+// own value in through createBpiMcpServer({ bpiApiUrl }).)
 const BPI_API_URL = process.env.BPI_API_URL || 'http://localhost:4000';
 
 // ─── Partner registry = BPI's vault (multi-tenant) ──────────────────────────
@@ -63,7 +72,9 @@ const BPI_API_URL = process.env.BPI_API_URL || 'http://localhost:4000';
 //   (b) their BPI Open Banking client_id/secret — the powerful banking
 //       credential, kept here in BPI's vault and NEVER handed back to anyone.
 // The partner's app only ever receives an opaque token, never these secrets.
-const PARTNER_REGISTRY = {
+// These are the DEMO partners. In production the same structure is loaded
+// from AWS Secrets Manager instead (see deploy/aws-agentcore/).
+export const DEMO_PARTNER_REGISTRY = {
   // mcpClientId -> tenant record
   'mcp_dragonpay_7f3a91': {
     partnerId: 'dragonpay',
@@ -86,10 +97,20 @@ const PARTNER_REGISTRY = {
 };
 
 // ─── Server-side state (nothing sensitive ever leaves this process) ──────────
-// The partner app and the AI only ever see the opaque *keys* of these maps
-// (a "partnerToken" / "sessionId"). The secrets and access tokens stay here.
-const partnerSessions = new Map(); // partnerToken -> { partnerId, displayName, bpiClientId, bpiClientSecret, scopes }
-const sessions = new Map();        // sessionId   -> { access_token, scope, partnerId, bpiClientId, bpiClientSecret }
+// The partner app and the AI only ever see the opaque *keys* of this store
+// (a "partnerToken" / "sessionId"). The access tokens stay here, and the
+// banking secrets are always looked up from the registry, never copied out.
+//   'partner' records: partnerToken -> { partnerId }
+//   'session' records: sessionId    -> { access_token, scope, partnerId }
+// By default the store is simply memory, as in the PoC. The AWS production
+// setup swaps in a database (DynamoDB) with the same get/set shape.
+export function createMemoryStore() {
+  const maps = { partner: new Map(), session: new Map() };
+  return {
+    async get(kind, key) { return maps[kind].get(key); },
+    async set(kind, key, value /* , ttlSeconds */) { maps[kind].set(key, value); },
+  };
+}
 
 // ─── Logging ────────────────────────────────────────────────────────────────
 // Write a structured line to stderr. The orchestrator reads these and prints
@@ -104,21 +125,25 @@ function slog(level, text, data, ms) {
 // authenticated tenant's BPI client_id/secret, which are attached as the
 // X-IBM-* headers BPI's API expects. A `bearer` (the customer's access token)
 // is attached when the call acts on a specific customer.
-async function bpiFetch(method, path, { headers = {}, json, form, bearer, transactionId, creds } = {}) {
-  const url = `${BPI_API_URL}${path}`;
+async function bpiFetch(ctx, method, path, { headers = {}, json, form, bearer, transactionId, creds } = {}) {
+  const url = `${ctx.bpiApiUrl}${path}`;
   const h = { ...headers };
   if (bearer) h['Authorization'] = `Bearer ${bearer}`;                 // customer's access token
-  h['X-IBM-Client-Id'] = creds?.bpiClientId || PARTNER_REGISTRY['mcp_dragonpay_7f3a91'].bpiClientId;         // which partner (BPI credential)
-  h['X-IBM-Client-Secret'] = creds?.bpiClientSecret || PARTNER_REGISTRY['mcp_dragonpay_7f3a91'].bpiClientSecret; // stays server-side
+  h['X-IBM-Client-Id'] = creds.bpiClientId;                            // which partner (BPI credential)
+  h['X-IBM-Client-Secret'] = creds.bpiClientSecret;                    // stays server-side
   if (transactionId) h['transactionId'] = transactionId;
   let body;
   if (json) { h['Content-Type'] = 'application/json'; body = JSON.stringify(json); }
   if (form) { h['Content-Type'] = 'application/x-www-form-urlencoded'; body = new URLSearchParams(form).toString(); }
-  slog('http', `→ ${method} ${path}`);
+  ctx.log('http', `→ ${method} ${path}`);
   const started = Date.now();
   const res = await fetch(url, { method, headers: h, body });
   const data = await res.json().catch(() => ({}));
-  slog(res.ok ? 'ok' : 'err', `← ${res.status} ${path}`, null, Date.now() - started);
+  // Demo-only: the AWS-hosted mock bank can attach its own terminal lines so the
+  // demo UI's "BPI API" panel still fills when the bank runs remotely. Pass
+  // them along and remove them so they never reach the tool results.
+  if (Array.isArray(data._demoLogs)) { ctx.relay(data._demoLogs); delete data._demoLogs; }
+  ctx.log(res.ok ? 'ok' : 'err', `← ${res.status} ${path}`, null, Date.now() - started);
   return { ok: res.ok, status: res.status, data, transactionId: res.headers.get('transactionId') };
 }
 
@@ -234,74 +259,140 @@ const TOOLS = [
   },
 ];
 
+// In production on AWS, the partner can be identified from its verified login
+// token instead of sending a second secret ("jwt" mode). The tool stays the
+// same; it simply no longer *requires* the clientId/clientSecret inputs.
+function toolsFor(partnerAuthMode) {
+  if (partnerAuthMode !== 'jwt') return TOOLS;
+  return TOOLS.map((t) => (t.name !== 'bpi_partner_authenticate' ? t : {
+    ...t,
+    description: "Authenticate the partner application to BPI's MCP server. The partner is identified from the verified access token it used to call this server, so clientId/clientSecret are optional (if sent, they must belong to the same partner). Returns an opaque partnerToken. BPI resolves the tenant's Open Banking secret server-side and never exposes it.",
+    inputSchema: { ...t.inputSchema, required: [] },
+  }));
+}
+
 // ─── MCP server wiring ──────────────────────────────────────────────────────
-// Create the protocol server and declare that we provide "tools".
-const server = new Server(
-  { name: 'bpi-open-banking-mcp', version: '1.0.0' },
-  { capabilities: { tools: {} } },
-);
+// Build one MCP server with all 8 tools. Every option has a default that
+// reproduces the local PoC exactly, so `createBpiMcpServer()` with no
+// arguments behaves just like before.
+//   bpiApiUrl        where the BPI API lives
+//   registry         partner registry (BPI's vault) — demo partners by default
+//   store            where tokens/sessions are kept — memory by default
+//   logSink(rec)     where activity lines go — stderr by default
+//   echoLogs         demo-only: also return the activity lines with each result
+//                    so a remote demo UI can still fill its terminal panels
+//   partnerAuthMode  'tool' (default, PoC) or 'jwt' (partner from login token)
+//   jwtPartnerId     for 'jwt' mode: the partner already verified for THIS request
+export function createBpiMcpServer(options = {}) {
+  const {
+    bpiApiUrl = BPI_API_URL,
+    registry = DEMO_PARTNER_REGISTRY,
+    store = defaultStore,
+    logSink = (r) => slog(r.level, r.text, r.data, r.ms),
+    echoLogs = false,
+    partnerAuthMode = 'tool',
+    jwtPartnerId = null,
+  } = options;
+  const byPartnerId = new Map(Object.values(registry).map((t) => [t.partnerId, t]));
+  const tools = toolsFor(partnerAuthMode);
 
-// A client calls "tools/list" once, up front, to discover what this server can
-// do. We simply return the catalog above.
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  slog('info', `tools/list → ${TOOLS.length} tools advertised`);
-  return { tools: TOOLS };
-});
+  // Create the protocol server and declare that we provide "tools".
+  const server = new Server(
+    { name: 'bpi-open-banking-mcp', version: '1.0.0' },
+    { capabilities: { tools: {} } },
+  );
 
-// The heart of the server: every "tools/call" request lands here. We log it,
-// route it to dispatch() by tool name, and wrap the result in MCP's response
-// envelope. Any thrown error becomes a clean isError result — the server never
-// crashes on a bad request.
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const { name, arguments: args = {} } = req.params;   // which tool + its inputs
-  slog('tool', `tools/call ${name}`, summarizeArgs(args));
-  try {
-    const result = await dispatch(name, args);
-    slog('ok', `tools/call ${name} ✓`);
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-  } catch (err) {
-    slog('err', `tools/call ${name} ✗ ${err.message}`);
-    return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true };
-  }
-});
+  // A client calls "tools/list" once, up front, to discover what this server can
+  // do. We simply return the catalog above.
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    logSink({ level: 'info', text: `tools/list → ${tools.length} tools advertised` });
+    return { tools };
+  });
+
+  // The heart of the server: every "tools/call" request lands here. We log it,
+  // route it to dispatch() by tool name, and wrap the result in MCP's response
+  // envelope. Any thrown error becomes a clean isError result — the server never
+  // crashes on a bad request.
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    const { name, arguments: args = {} } = req.params;   // which tool + its inputs
+    const echoed = [];                                    // demo-only copies of this call's log lines
+    const ctx = {
+      bpiApiUrl, registry, byPartnerId, store, partnerAuthMode, jwtPartnerId,
+      log(level, text, data, ms) {
+        const rec = { level, text, data: data ?? null, ms: Number.isFinite(ms) ? ms : null };
+        logSink(rec);
+        if (echoLogs) echoed.push({ channel: 'mcp-server', ...rec });
+      },
+      relay(bankLines) { if (echoLogs) echoed.push(...bankLines.map((l) => ({ channel: 'bpi-api', ...l }))); },
+    };
+    ctx.log('tool', `tools/call ${name}`, summarizeArgs(args));
+    const meta = () => (echoLogs ? { _meta: { serverLogs: echoed } } : {});
+    try {
+      const result = await dispatch(ctx, name, args);
+      ctx.log('ok', `tools/call ${name} ✓`);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }], ...meta() };
+    } catch (err) {
+      ctx.log('err', `tools/call ${name} ✗ ${err.message}`);
+      return { content: [{ type: 'text', text: JSON.stringify({ error: err.message }) }], isError: true, ...meta() };
+    }
+  });
+
+  return server;
+}
+
+// The PoC keeps one memory store for the life of the process.
+const defaultStore = createMemoryStore();
 
 // ─── Auth guards ────────────────────────────────────────────────────────────
 // Turn an opaque token back into its server-side record, or reject the call.
 // These enforce the ordering: a partner must authenticate before doing OAuth,
 // and OAuth must complete before any account/payment call.
-function requireSession(sessionId) {
-  const s = sessions.get(sessionId);
+async function requireSession(ctx, sessionId) {
+  const s = await ctx.store.get('session', sessionId);
   if (!s) throw new Error('Invalid or expired sessionId. Call bpi_exchange_token first.');
-  return s;
+  return { ...s, creds: tenantFor(ctx, s.partnerId) };
 }
 
-function requirePartner(partnerToken) {
-  const p = partnerSessions.get(partnerToken);
+async function requirePartner(ctx, partnerToken) {
+  const p = await ctx.store.get('partner', partnerToken);
   if (!p) throw new Error('Partner not authenticated. Call bpi_partner_authenticate first.');
-  return p;
+  return tenantFor(ctx, p.partnerId);
+}
+
+// Look up a partner's full record (including its vaulted BPI credentials).
+function tenantFor(ctx, partnerId) {
+  const t = ctx.byPartnerId.get(partnerId);
+  if (!t) throw new Error('Partner is no longer registered.');
+  return t;
 }
 
 // ─── Dispatch: the actual work behind each tool ─────────────────────────────
-async function dispatch(name, args) {
+async function dispatch(ctx, name, args) {
   switch (name) {
     // ── 1. PARTNER AUTH (Layer 1 of 2) ──────────────────────────────────────
     // Prove which partner is calling, then hand back only an opaque token.
     case 'bpi_partner_authenticate': {
-      // Look the partner up in BPI's registry and check their MCP secret.
-      const tenant = PARTNER_REGISTRY[args.clientId];
-      const ok = tenant && timingSafeEqual(tenant.mcpClientSecret, args.clientSecret);
-      if (!ok) {
-        slog('err', `Partner authentication failed for clientId="${shorten(args.clientId)}".`);
-        throw new Error('invalid_partner_client');
+      let tenant;
+      if (ctx.partnerAuthMode === 'jwt') {
+        // Production on AWS: the partner was already verified from its login
+        // token before this request reached us. Any credentials sent must match.
+        tenant = ctx.jwtPartnerId ? ctx.byPartnerId.get(ctx.jwtPartnerId) : null;
+        if (!tenant) throw new Error('partner_token_missing: no verified partner token reached the server (see deploy/aws-agentcore/docs/6-troubleshooting.md).');
+        if (args.clientId && ctx.registry[args.clientId]?.partnerId !== tenant.partnerId) throw new Error('invalid_partner_client');
+      } else {
+        // Look the partner up in BPI's registry and check their MCP secret.
+        tenant = ctx.registry[args.clientId];
+        const ok = tenant && timingSafeEqual(tenant.mcpClientSecret, args.clientSecret);
+        if (!ok) {
+          ctx.log('err', `Partner authentication failed for clientId="${shorten(args.clientId)}".`);
+          throw new Error('invalid_partner_client');
+        }
       }
-      // On success we bind the tenant's BPI vault credentials to a fresh token.
-      // The caller receives the token only — never the underlying BPI secret.
+      // On success we bind the tenant to a fresh token. The caller receives the
+      // token only — never the underlying BPI secret.
       const partnerToken = 'ptkn_' + crypto.randomBytes(12).toString('hex');
-      partnerSessions.set(partnerToken, {
-        partnerId: tenant.partnerId, displayName: tenant.displayName,
-        bpiClientId: tenant.bpiClientId, bpiClientSecret: tenant.bpiClientSecret, scopes: tenant.scopes,
-      });
-      slog('ok', `Partner authenticated: tenant="${tenant.displayName}" (${tenant.partnerId}). Resolved its BPI Open Banking client_id from vault; client_secret stays server-side.`);
+      await ctx.store.set('partner', partnerToken, { partnerId: tenant.partnerId }, 3600);
+      ctx.log('ok', `Partner authenticated: tenant="${tenant.displayName}" (${tenant.partnerId}). Resolved its BPI Open Banking client_id from vault; client_secret stays server-side.`);
       return { partnerToken, partner: tenant.displayName, partnerId: tenant.partnerId, scopes: tenant.scopes };
     }
 
@@ -309,16 +400,16 @@ async function dispatch(name, args) {
     // Build BPI's hosted login URL using THIS tenant's client_id. No API call
     // yet — the customer opens this URL and logs in on BPI's own page.
     case 'bpi_begin_authorization': {
-      const p = requirePartner(args.partnerToken);
+      const p = await requirePartner(ctx, args.partnerToken);
       const scope = p.scopes;
       const redirectUri = args.redirectUri || 'https://partner.example/callback';
       const state = args.state || crypto.randomBytes(12).toString('hex');
-      const authorizeUrl = `${BPI_API_URL}/bpi/api/oauth2/authorize?response_type=code` +
+      const authorizeUrl = `${ctx.bpiApiUrl}/bpi/api/oauth2/authorize?response_type=code` +
         `&client_id=${encodeURIComponent(p.bpiClientId)}` +
         `&scope=${encodeURIComponent(scope)}` +
         `&redirect_uri=${encodeURIComponent(redirectUri)}` +
         `&state=${encodeURIComponent(state)}`;
-      slog('info', `Authorization initiated for tenant "${p.displayName}" with that tenant's BPI client_id. Returning hosted /authorize URL.`);
+      ctx.log('info', `Authorization initiated for tenant "${p.displayName}" with that tenant's BPI client_id. Returning hosted /authorize URL.`);
       return { authorizeUrl, scope, state, redirectUri };
     }
 
@@ -327,15 +418,15 @@ async function dispatch(name, args) {
     // ONLY run here on the server. The resulting access token is stored against
     // an opaque sessionId; the caller/AI receives the sessionId, never the token.
     case 'bpi_exchange_token': {
-      const p = requirePartner(args.partnerToken);
-      const r = await bpiFetch('POST', '/bpi/api/oauth2/token', {
+      const p = await requirePartner(ctx, args.partnerToken);
+      const r = await bpiFetch(ctx, 'POST', '/bpi/api/oauth2/token', {
         creds: p,
         form: { grant_type: 'authorization_code', code: args.code, client_id: p.bpiClientId, client_secret: p.bpiClientSecret },
       });
       if (!r.ok) throw new Error(r.data.error || 'token exchange failed');
       const sessionId = 'sess_' + crypto.randomBytes(8).toString('hex');
-      sessions.set(sessionId, { access_token: r.data.access_token, scope: r.data.scope, partnerId: p.partnerId, bpiClientId: p.bpiClientId, bpiClientSecret: p.bpiClientSecret });
-      slog('info', `OAuth session established (${sessionId}) for tenant "${p.displayName}" scope="${r.data.scope}" expires_in=${r.data.expires_in}s`);
+      await ctx.store.set('session', sessionId, { access_token: r.data.access_token, scope: r.data.scope, partnerId: p.partnerId }, r.data.expires_in);
+      ctx.log('info', `OAuth session established (${sessionId}) for tenant "${p.displayName}" scope="${r.data.scope}" expires_in=${r.data.expires_in}s`);
       return { sessionId, scope: r.data.scope, expires_in: r.data.expires_in, token_type: r.data.token_type };
     }
 
@@ -343,8 +434,8 @@ async function dispatch(name, args) {
     // From here on, every call carries the sessionId; requireSession() attaches
     // the right customer token + tenant credentials automatically.
     case 'bpi_list_transactional_accounts': {
-      const s = requireSession(args.sessionId);
-      const r = await bpiFetch('GET', '/bpi/api/accounts/transactionalAccounts', { bearer: s.access_token, creds: s });
+      const s = await requireSession(ctx, args.sessionId);
+      const r = await bpiFetch(ctx, 'GET', '/bpi/api/accounts/transactionalAccounts', { bearer: s.access_token, creds: s.creds });
       if (!r.ok) throw new Error(r.data.description || 'account retrieval failed');
       return r.data.body;
     }
@@ -353,9 +444,9 @@ async function dispatch(name, args) {
     // Start moving `amount` from the chosen account. Returns a transactionId
     // that ties together the remaining steps, plus the masked mobile number.
     case 'bpi_fundtopup_initiate': {
-      const s = requireSession(args.sessionId);
-      const r = await bpiFetch('POST', '/bpi/api/fundTopUp/initiate', {
-        bearer: s.access_token, creds: s,
+      const s = await requireSession(ctx, args.sessionId);
+      const r = await bpiFetch(ctx, 'POST', '/bpi/api/fundTopUp/initiate', {
+        bearer: s.access_token, creds: s.creds,
         json: {
           merchantTransactionReference: args.merchantTransactionReference || String(Date.now()),
           accountNumberToken: args.accountNumberToken,
@@ -370,9 +461,9 @@ async function dispatch(name, args) {
     // ── 6. SEND TRANSACTION OTP ─────────────────────────────────────────────
     // Ask BPI to SMS the customer a one-time code to approve this specific move.
     case 'bpi_fundtopup_send_otp': {
-      const s = requireSession(args.sessionId);
-      const r = await bpiFetch('POST', '/bpi/api/fundTopUp/otp', {
-        bearer: s.access_token, creds: s, transactionId: args.transactionId,
+      const s = await requireSession(ctx, args.sessionId);
+      const r = await bpiFetch(ctx, 'POST', '/bpi/api/fundTopUp/otp', {
+        bearer: s.access_token, creds: s.creds, transactionId: args.transactionId,
         json: { mobileNumberToken: args.mobileNumberToken },
       });
       if (!r.ok) throw new Error(r.data.description || 'otp request failed');
@@ -383,9 +474,9 @@ async function dispatch(name, args) {
     // Submit the OTP the customer entered to finalize the transfer. Success
     // returns the confirmation number — the "receipt".
     case 'bpi_fundtopup_process': {
-      const s = requireSession(args.sessionId);
-      const r = await bpiFetch('POST', '/bpi/api/fundTopUp/process', {
-        bearer: s.access_token, creds: s, transactionId: args.transactionId,
+      const s = await requireSession(ctx, args.sessionId);
+      const r = await bpiFetch(ctx, 'POST', '/bpi/api/fundTopUp/process', {
+        bearer: s.access_token, creds: s.creds, transactionId: args.transactionId,
         json: { otp: args.otp },
       });
       if (!r.ok) throw new Error(r.data.description || 'process failed');
@@ -395,8 +486,8 @@ async function dispatch(name, args) {
     // ── 8. STATUS (RECONCILIATION) ───────────────────────────────────────────
     // Look up whether a transaction posted — useful if a reply was ever missed.
     case 'bpi_fundtopup_status': {
-      const s = requireSession(args.sessionId);
-      const r = await bpiFetch('GET', '/bpi/api/fundTopUp/status', { bearer: s.access_token, creds: s, transactionId: args.transactionId });
+      const s = await requireSession(ctx, args.sessionId);
+      const r = await bpiFetch(ctx, 'GET', '/bpi/api/fundTopUp/status', { bearer: s.access_token, creds: s.creds, transactionId: args.transactionId });
       if (!r.ok) throw new Error(r.data.description || 'status failed');
       return r.data.body;
     }
@@ -430,8 +521,13 @@ function timingSafeEqual(a, b) {
 }
 
 // ─── Bootstrap ──────────────────────────────────────────────────────────────
-// Connect the server to the stdio transport and start listening. From this
-// point the parent process (the MCP client) can call tools/list and tools/call.
-const transport = new StdioServerTransport();
-await server.connect(transport);
-slog('info', `BPI MCP Server connected over stdio. Upstream API: ${BPI_API_URL}`);
+// When this file is run directly (the local PoC), connect the server to the
+// stdio transport and start listening. From this point the parent process (the
+// MCP client) can call tools/list and tools/call. When the file is imported
+// (the AWS version), nothing starts here — the importer decides.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const server = createBpiMcpServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  slog('info', `BPI MCP Server connected over stdio. Upstream API: ${BPI_API_URL}`);
+}
